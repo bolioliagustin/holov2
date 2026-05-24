@@ -1,0 +1,166 @@
+/* HoloNFC · Design tokens · Cobalt */
+:root {
+  --neutral-50:  #f8f9fc;
+  --neutral-100: #f4f6fa;
+  --neutral-200: #e9edf4;
+  --neutral-300: #d9dde5;
+  --neutral-400: #b8bfcc;
+  --neutral-500: #8590a3;
+  --neutral-600: #5e6b80;
+  --neutral-700: #3d4659;
+  --neutral-800: #1f2638;
+  --neutral-900: #0d1421;
+
+  --cobalt-50:  #eef2ff;
+  --cobalt-100: #dde6ff;
+  --cobalt-200: #b8caff;
+  --cobalt-300: #8da9ff;
+  --cobalt-400: #4d7cff;
+  --cobalt-500: #1d5cff;
+  --cobalt-600: #0046e6;
+  --cobalt-700: #0035b8;
+  --cobalt-800: #00298f;
+  --cobalt-900: #001f6e;
+
+  --success-50:  #e8f6ee;
+  --success-500: #0a8a4d;
+  --success-700: #036134;
+  --warning-50:  #fdf2dc;
+  --warning-500: #b87100;
+  --warning-700: #7a4a00;
+  --danger-50:   #fde9e7;
+  --danger-500:  #c4221c;
+  --danger-700:  #8e1410;
+  --info-50:     var(--cobalt-50);
+  --info-500:    var(--cobalt-500);
+
+  --holo-bg:     #0a1024;
+  --holo-bg-2:   #060a18;
+  --holo-ink:    #ffffff;
+  --holo-mute:   rgba(255,255,255,0.55);
+  --holo-accent: var(--cobalt-400);
+
+  --bg:          var(--neutral-100);
+  --surface:     #ffffff;
+  --surface-2:   var(--neutral-50);
+  --surface-3:   var(--neutral-200);
+  --hover:       rgba(13,20,33,0.04);
+  --pressed:     rgba(13,20,33,0.07);
+  --selected:    var(--cobalt-50);
+
+  --ink:         var(--neutral-900);
+  --ink-strong:  var(--neutral-900);
+  --ink-2:       var(--neutral-700);
+  --ink-mute:    var(--neutral-600);
+  --ink-faint:   var(--neutral-500);
+  --ink-inverse: #ffffff;
+  --ink-on-accent: #ffffff;
+
+  --line:        var(--neutral-300);
+  --line-strong: var(--neutral-400);
+  --line-soft:   var(--neutral-200);
+
+  --accent:         var(--cobalt-500);
+  --accent-hover:   var(--cobalt-600);
+  --accent-pressed: var(--cobalt-700);
+  --accent-soft:    var(--cobalt-50);
+  --accent-soft-2:  var(--cobalt-100);
+
+  --focus-ring: 0 0 0 3px rgba(29,92,255,0.25);
+
+  --font-display: 'Archivo', system-ui, -apple-system, sans-serif;
+  --font-body:    'Archivo', system-ui, -apple-system, sans-serif;
+  --font-mono:    'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --space-0:  0px;
+  --space-1:  2px;
+  --space-2:  4px;
+  --space-3:  8px;
+  --space-4:  12px;
+  --space-5:  16px;
+  --space-6:  20px;
+  --space-7:  24px;
+  --space-8:  32px;
+  --space-9:  40px;
+  --space-10: 48px;
+  --space-11: 64px;
+
+  --radius-none: 0;
+  --radius-sm:   2px;
+  --radius-md:   4px;
+  --radius-lg:   8px;
+  --radius-pill: 9999px;
+
+  --shadow-0: none;
+  --shadow-1: 0 1px 2px rgba(13,20,33,0.06), 0 1px 0 rgba(13,20,33,0.03);
+  --shadow-2: 0 2px 6px rgba(13,20,33,0.08), 0 1px 2px rgba(13,20,33,0.05);
+  --shadow-3: 0 8px 24px rgba(13,20,33,0.10), 0 2px 6px rgba(13,20,33,0.06);
+  --shadow-focus: 0 0 0 3px rgba(29,92,255,0.25);
+
+  --ease-out:    cubic-bezier(0.2, 0.7, 0.3, 1);
+  --ease-in:     cubic-bezier(0.5, 0, 0.75, 0);
+  --ease-in-out: cubic-bezier(0.5, 0, 0.5, 1);
+  --duration-fast: 120ms;
+  --duration-base: 180ms;
+  --duration-slow: 260ms;
+
+  --sidebar-w: 220px;
+  --header-h:  60px;
+}
+
+[data-theme="dark"] {
+  --bg:        #0a0f1a;
+  --surface:   #141a28;
+  --surface-2: #0e1320;
+  --surface-3: #1d2438;
+  --hover:     rgba(255,255,255,0.04);
+  --pressed:   rgba(255,255,255,0.07);
+  --selected:  rgba(77,124,255,0.16);
+
+  --ink:        #e8ecf3;
+  --ink-strong: #ffffff;
+  --ink-2:      #c3c9d6;
+  --ink-mute:   #8590a3;
+  --ink-faint:  #5e6b80;
+  --ink-inverse: #0d1421;
+
+  --line:        rgba(255,255,255,0.10);
+  --line-strong: rgba(255,255,255,0.18);
+  --line-soft:   rgba(255,255,255,0.06);
+
+  --accent:         var(--cobalt-400);
+  --accent-hover:   #6e92ff;
+  --accent-pressed: var(--cobalt-500);
+  --accent-soft:    rgba(77,124,255,0.14);
+  --accent-soft-2:  rgba(77,124,255,0.24);
+
+  --success-50:  rgba(45,212,123,0.14);
+  --success-500: #2dd47b;
+  --warning-50:  rgba(240,168,71,0.14);
+  --warning-500: #f0a847;
+  --danger-50:   rgba(255,90,74,0.14);
+  --danger-500:  #ff5a4a;
+
+  --shadow-1: 0 1px 2px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.02);
+  --shadow-2: 0 2px 8px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.03);
+  --shadow-3: 0 8px 28px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.04);
+}
+
+html, html * {
+  transition: background-color var(--duration-base) var(--ease-out),
+              border-color var(--duration-base) var(--ease-out),
+              color var(--duration-base) var(--ease-out);
+}
+html *::selection, html *:focus-visible { transition: none; }
+
+@keyframes pulse-ring {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.3; }
+}
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
