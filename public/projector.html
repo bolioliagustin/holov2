@@ -157,6 +157,46 @@
     overflow: hidden;
     visibility: hidden;
   }
+
+  /* ─── Fallback overlay (no video / processing / failed to load) ───────── */
+  #fallback {
+    position: absolute;
+    inset: 0;
+    background: #000;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    opacity: 0;
+    transition: opacity 200ms ease;
+    pointer-events: none;
+    z-index: 5;
+  }
+  #fallback.show { opacity: 1; }
+  .fb-ring {
+    width: 120px; height: 120px;
+    border: 3px solid rgba(77, 124, 255, 0.15);
+    border-top-color: #4d7cff;
+    border-radius: 50%;
+    animation: fb-spin 1.5s linear infinite;
+  }
+  @keyframes fb-spin { to { transform: rotate(360deg); } }
+  .fb-label {
+    margin-top: 28px;
+    font: 500 14px/1 'JetBrains Mono', monospace;
+    color: rgba(255,255,255,0.55);
+    letter-spacing: 0.35em;
+    text-transform: uppercase;
+  }
+  .fb-pulse {
+    margin-top: 10px;
+    width: 80px; height: 2px;
+    background: linear-gradient(90deg, transparent, #4d7cff, transparent);
+    background-size: 200% 100%;
+    animation: fb-pulse 1.8s ease-in-out infinite;
+  }
+  @keyframes fb-pulse {
+    0%   { background-position: -100% 0; }
+    100% { background-position:  100% 0; }
+  }
 </style>
 </head>
 <body>
@@ -189,6 +229,13 @@
   <!-- Hidden pool for video preloading -->
   <div id="cache-pool"></div>
 
+  <!-- Fallback overlay (procesando / sin video / error de carga) -->
+  <div id="fallback">
+    <div class="fb-ring"></div>
+    <div class="fb-label">Procesando</div>
+    <div class="fb-pulse"></div>
+  </div>
+
 </div>
 
 <script>
@@ -201,6 +248,7 @@
   if (params.get('ui') === '1') document.body.classList.add('ui');
 
   let ws, reconnectTimer;
+  let heartbeatInterval = null;
   let idleTimer = null;
   let progressTimer = null;
   let config = {};
@@ -222,6 +270,24 @@
   const eventBadge    = document.getElementById('event-badge');
   const eventNameIdle = document.getElementById('event-name-idle');
   const cachePool     = document.getElementById('cache-pool');
+  const fallback      = document.getElementById('fallback');
+
+  function showFallback(label) {
+    fallback.querySelector('.fb-label').textContent = label || 'Procesando';
+    fallback.classList.add('show');
+  }
+  function hideFallback() {
+    fallback.classList.remove('show');
+  }
+
+  // Report uncaught JS errors to the backend so the admin sees them
+  window.addEventListener('error', (ev) => {
+    try {
+      if (ws && ws.readyState === 1) {
+        ws.send(JSON.stringify({ type: 'PROJECTOR_ERROR', error: String(ev.message || ev.error || 'unknown') }));
+      }
+    } catch {}
+  });
 
   // Start muted (browser autoplay policy)
   idleVideo.muted  = true;
@@ -287,6 +353,8 @@
     if (progressTimer) { clearInterval(progressTimer); progressTimer = null; }
     if (idleTimer)     { clearTimeout(idleTimer);     idleTimer     = null; }
     guestVideo.onended = null;
+    guestVideo.onerror = null;
+    hideFallback();
 
     // Idle never stops — just bring it back to foreground
     idle.classList.remove('hidden');
@@ -349,25 +417,38 @@
         showIdle();
       };
 
-      // Wait for the video to be ready BEFORE crossfading, so we never show
-      // a black flash. canplaythrough fires when buffered enough to play to end.
+      // If the video file is missing or fails to load → fallback overlay
+      const onLoadError = () => {
+        console.warn('[projector] guest video failed to load → fallback');
+        showFallback('Procesando');
+        reveal();
+        idleTimer = setTimeout(showIdle, FALLBACK_DURATION);
+      };
+      guestVideo.onerror = onLoadError;
+
       const onReady = () => {
         guestVideo.removeEventListener('canplaythrough', onReady);
         guestVideo.removeEventListener('canplay', onReady);
+        hideFallback();
         guestVideo.currentTime = 0;
         guestVideo.play().catch(e => console.warn('[projector] guest play:', e));
         reveal();
       };
       guestVideo.addEventListener('canplaythrough', onReady, { once: true });
-      // Fallback if canplaythrough never fires (rare)
       guestVideo.addEventListener('canplay', onReady, { once: true });
-      setTimeout(() => { if (!active.classList.contains('show')) onReady(); }, 800);
+      // If neither fires within 1.5 s, assume the file is missing → fallback
+      const safetyTimer = setTimeout(() => {
+        if (!active.classList.contains('show')) {
+          if (guestVideo.readyState >= 2) onReady();
+          else onLoadError();
+        }
+      }, 1500);
 
-      // Trigger the load — should be near-instant if precached
       if (guestVideo.src !== src) guestVideo.src = src;
-      else { guestVideo.currentTime = 0; onReady(); }
+      else { clearTimeout(safetyTimer); guestVideo.currentTime = 0; onReady(); }
     } else {
-      // No video → still crossfade and show only the name overlay (if ?ui=1)
+      // No video assigned → fallback overlay
+      showFallback('Procesando');
       reveal();
       idleTimer = setTimeout(showIdle, FALLBACK_DURATION);
     }
@@ -379,6 +460,15 @@
 
     ws.onopen = () => {
       console.log('[projector] WS connected');
+      // Identify as projector
+      ws.send(JSON.stringify({ type: 'HELLO', role: 'projector' }));
+      // Start heartbeat
+      if (heartbeatInterval) clearInterval(heartbeatInterval);
+      heartbeatInterval = setInterval(() => {
+        if (ws && ws.readyState === 1) {
+          ws.send(JSON.stringify({ type: 'PING', state: active.classList.contains('show') ? 'guest' : 'idle' }));
+        }
+      }, 5_000);
       loadConfig();
       preloadAllGuestVideos();
     };
@@ -403,12 +493,21 @@
           loadConfig();
           preloadAllGuestVideos();  // refresh cache pool in case videos changed
         }
+
+        if (data.type === 'RELOAD') {
+          console.warn('[projector] received RELOAD from server');
+          location.reload();
+        }
       } catch(err) {
         console.error('[projector] WS msg parse error:', err);
       }
     };
 
-    ws.onclose = () => { console.warn('[projector] WS closed'); scheduleReconnect(); };
+    ws.onclose = () => {
+      console.warn('[projector] WS closed');
+      if (heartbeatInterval) { clearInterval(heartbeatInterval); heartbeatInterval = null; }
+      scheduleReconnect();
+    };
     ws.onerror = () => ws.close();
   }
 

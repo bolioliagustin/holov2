@@ -4,6 +4,113 @@ import { useWS } from '../context/WSContext';
 
 const API = '/api';
 
+// ─── Readiness widget ─────────────────────────────────────────────────────
+function ReadinessWidget() {
+  const [data, setData] = useState(null);
+  const [expanded, setExpanded] = useState(false);
+  const { on } = useWS();
+
+  const load = () => {
+    fetch(`${API}/health/event-readiness`).then((r) => r.json()).then(setData).catch(() => {});
+  };
+
+  useEffect(() => {
+    load();
+    const id = setInterval(load, 10000);
+    const offTag = on('TAG_READ',         () => load());
+    const offNfc = on('NFC_STATUS',       () => load());
+    const offPrj = on('PROJECTOR_STATUS', () => load());
+    const offVid = on('VIDEO_STATUS',     () => load());
+    return () => { clearInterval(id); offTag(); offNfc(); offPrj(); offVid(); };
+  }, [on]);
+
+  if (!data) return null;
+  const { ready, summary, checks } = data;
+  const failed = checks.filter((c) => !c.ok);
+  const blocking = failed.filter((c) => !c.warn);
+
+  const headerColor = ready
+    ? 'var(--success-500)'
+    : blocking.length > 0 ? 'var(--danger-500)' : 'var(--warning-500)';
+  const headerBg = ready
+    ? 'rgba(34, 197, 94, 0.08)'
+    : blocking.length > 0 ? 'rgba(239, 68, 68, 0.08)' : 'rgba(245, 158, 11, 0.10)';
+
+  return (
+    <div style={{ borderBottom: '1px solid var(--line)', background: headerBg, flexShrink: 0 }}>
+      <div
+        onClick={() => setExpanded((e) => !e)}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 14,
+          padding: '10px 24px', cursor: 'pointer',
+        }}
+      >
+        <div style={{
+          width: 10, height: 10, borderRadius: '50%',
+          background: headerColor,
+          boxShadow: ready ? `0 0 0 4px ${headerColor}33` : 'none',
+        }} />
+        <div style={{ fontWeight: 700, fontSize: 13 }}>
+          {ready
+            ? 'Sistema listo para el evento'
+            : blocking.length > 0
+              ? `${blocking.length} ${blocking.length === 1 ? 'problema crítico' : 'problemas críticos'}`
+              : `${failed.length} ${failed.length === 1 ? 'advertencia' : 'advertencias'}`
+          }
+        </div>
+        <span className="mono" style={{ fontSize: 10, color: 'var(--ink-mute)' }}>
+          · {summary.totalGuests} invitados · {summary.checkedIn} ingresaron
+        </span>
+        <div style={{ flex: 1 }} />
+        <button
+          onClick={(e) => { e.stopPropagation(); load(); }}
+          style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-mute)', fontSize: 11, fontFamily: 'var(--font-mono)' }}
+          title="Re-verificar ahora"
+        >
+          ↻ verificar
+        </button>
+        <span style={{ fontSize: 11, color: 'var(--ink-mute)' }}>
+          {expanded ? '▲' : '▼'}
+        </span>
+      </div>
+      {expanded && (
+        <div style={{ padding: '4px 24px 14px', display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '6px 24px' }}>
+          {checks.map((c) => (
+            <div key={c.key} style={{
+              display: 'flex', alignItems: 'center', gap: 10,
+              padding: '6px 10px',
+              background: 'var(--surface)',
+              borderRadius: 'var(--radius-sm)',
+              border: '1px solid var(--line-soft)',
+            }}>
+              <span style={{
+                width: 18, height: 18, borderRadius: '50%',
+                background: c.ok ? 'var(--success-500)' : (c.warn ? 'var(--warning-500)' : 'var(--danger-500)'),
+                color: '#fff',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: 11, fontWeight: 900, flexShrink: 0,
+              }}>
+                {c.ok ? '✓' : (c.warn ? '!' : '✕')}
+              </span>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 12, fontWeight: 600 }}>{c.label}</div>
+                {c.hint && (
+                  <div className="mono" style={{ fontSize: 10, color: 'var(--ink-mute)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={c.hint}>
+                    {c.hint}
+                  </div>
+                )}
+              </div>
+              <div className="mono" style={{ fontSize: 11, color: c.ok ? 'var(--ink-mute)' : 'var(--ink)' }}>
+                {c.value}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function useStats() {
   const [stats, setStats] = useState({ total: 0, checkedIn: 0, pending: 0, rescans: 0, unknown: 0 });
   const load = () => fetch(`${API}/stats`).then((r) => r.json()).then(setStats).catch(() => {});
@@ -68,6 +175,9 @@ export default function Dashboard() {
       </header>
 
       <div className="page-content" style={{ overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+        {/* Readiness check */}
+        <ReadinessWidget />
+
         {/* Stat row */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', borderBottom: '1px solid var(--line)', flexShrink: 0 }}>
           <StatCell label="Total invitados"       value={stats.total}     sub="lista total" />

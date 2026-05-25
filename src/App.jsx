@@ -1,6 +1,7 @@
 import { Routes, Route } from 'react-router-dom';
 import Layout from './components/Layout';
 import Dashboard  from './pages/Dashboard';
+import Events     from './pages/Events';
 import Invitados  from './pages/Invitados';
 import AssignNFC  from './pages/AssignNFC';
 import VideoIA    from './pages/VideoIA';
@@ -12,6 +13,7 @@ export default function App() {
     <Layout>
       <Routes>
         <Route path="/"          element={<Dashboard />} />
+        <Route path="/events"    element={<Events />} />
         <Route path="/invitados" element={<Invitados />} />
         <Route path="/nfc"       element={<AssignNFC />} />
         <Route path="/video"     element={<VideoIA />} />

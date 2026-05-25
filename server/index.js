@@ -5,11 +5,17 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { initWS } from './ws.js';
 import { startNFC, handleTag, setAssignMode } from './nfc.js';
+import { startBackupScheduler } from './backup.js';
+import { createLogger } from './logger.js';
+
+const log = createLogger('server');
 import guestsRouter  from './routes/guests.js';
 import configRouter  from './routes/config.js';
 import logsRouter    from './routes/logs.js';
 import statsRouter   from './routes/stats.js';
 import videosRouter  from './routes/videos.js';
+import healthRouter  from './routes/health.js';
+import eventsRouter  from './routes/events.js';
 import db from './db.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -28,6 +34,8 @@ app.use('/api/config',  configRouter);
 app.use('/api/logs',    logsRouter);
 app.use('/api/stats',   statsRouter);
 app.use('/api/videos',  videosRouter);
+app.use('/api/health',  healthRouter);
+app.use('/api/events',  eventsRouter);
 
 // NFC assign mode toggle
 app.post('/api/nfc/assign-mode', (req, res) => {
@@ -57,6 +65,11 @@ initWS(server);
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`\n  HoloNFC server running on http://localhost:${PORT}\n`);
+  log.info(`HoloNFC server running on http://localhost:${PORT}`);
   startNFC();
+  startBackupScheduler();
 });
+
+// Global error catchers — log uncaught exceptions so the operator sees them
+process.on('uncaughtException',  (err) => log.error('uncaughtException', { error: String(err), stack: err.stack }));
+process.on('unhandledRejection', (err) => log.error('unhandledRejection', { error: String(err) }));

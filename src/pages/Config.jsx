@@ -1,11 +1,21 @@
 import { useState, useEffect, useRef } from 'react';
 import { Chip, Btn, Field, Toggle } from '../components/ui/index';
 import { useToast } from '../components/ui/Toasts';
+import { useWS } from '../context/WSContext';
 
 const API = '/api';
 
 export default function Config() {
   const toast = useToast();
+  const { on } = useWS();
+  const [nfcStatus, setNfcStatus] = useState({ connected: false, readers: [] });
+
+  useEffect(() => {
+    fetch(`${API}/health/event-readiness`).then((r) => r.json()).then((d) => setNfcStatus(d.nfc)).catch(() => {});
+    const off = on('NFC_STATUS', (ev) => setNfcStatus({ connected: ev.connected, readers: ev.readers || [] }));
+    return off;
+  }, [on]);
+
   const [cfg, setCfg] = useState({
     holo_screen: '', idle_video: '', sim_mode: '0',
     event_name: '', event_venue: '', event_date: '', event_capacity: '0',
@@ -121,10 +131,16 @@ export default function Config() {
                   <div style={{ fontWeight: 700, fontSize: 14 }}>Conexión hardware</div>
                   <div className="mono" style={{ fontSize: 10, color: 'var(--ink-mute)', marginTop: 2 }}>USB · ACR122U</div>
                 </div>
-                <Chip variant="success" dot>Buscando…</Chip>
+                {nfcStatus.connected
+                  ? <Chip variant="success" dot>Conectado</Chip>
+                  : <Chip variant="danger"  dot>Desconectado</Chip>
+                }
               </div>
               <div style={{ fontSize: 12, color: 'var(--ink-2)', lineHeight: 1.5 }}>
-                El lector se detecta automáticamente al conectar el USB. Asegúrate de que los drivers de PC/SC estén instalados.
+                {nfcStatus.connected
+                  ? <>Lector: <span className="mono" style={{ color: 'var(--accent)' }}>{nfcStatus.readers.join(', ')}</span></>
+                  : 'Conectá el ACR122U por USB. Si no aparece, verificá los drivers de PC/SC (ACS Unified Driver).'
+                }
               </div>
             </div>
             <div className="card">

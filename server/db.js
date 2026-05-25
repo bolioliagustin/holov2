@@ -84,11 +84,69 @@ const migrations = [
   ['feather',      "INTEGER DEFAULT 5"],
   ['model',        "TEXT DEFAULT 'selfie'"],
   ['holo_boost',   "INTEGER DEFAULT 0"],
+  ['retry_count',  "INTEGER DEFAULT 0"],
+  ['started_at',   "TEXT DEFAULT NULL"],
+  ['event_id',     "INTEGER DEFAULT 1"],
 ];
 for (const [col, def] of migrations) {
   if (!existingCols.has(col)) {
     db.exec(`ALTER TABLE video_queue ADD COLUMN ${col} ${def}`);
     console.log(`[db] migrated: added video_queue.${col}`);
+  }
+}
+
+// ── Events table migrations ──────────────────────────────────────────────
+const eventCols = new Set(
+  db.prepare("PRAGMA table_info(events)").all().map((c) => c.name)
+);
+const eventMigrations = [
+  ['status',      "TEXT DEFAULT 'draft'"],
+  ['archived_at', "TEXT DEFAULT NULL"],
+  ['notes',       "TEXT DEFAULT ''"],
+  ['idle_video',  "TEXT DEFAULT ''"],
+];
+for (const [col, def] of eventMigrations) {
+  if (!eventCols.has(col)) {
+    db.exec(`ALTER TABLE events ADD COLUMN ${col} ${def}`);
+    console.log(`[db] migrated: added events.${col}`);
+  }
+}
+
+// ── Checkin log: add event_id ────────────────────────────────────────────
+const checkinCols = new Set(
+  db.prepare("PRAGMA table_info(checkin_log)").all().map((c) => c.name)
+);
+if (!checkinCols.has('event_id')) {
+  db.exec(`ALTER TABLE checkin_log ADD COLUMN event_id INTEGER DEFAULT 1`);
+  console.log('[db] migrated: added checkin_log.event_id');
+}
+
+// ── Bootstrap: ensure event #1 exists and is the current event ───────────
+db.prepare(`INSERT OR IGNORE INTO config (key, value) VALUES ('current_event_id', '1')`).run();
+
+// Migrate legacy config (event_name etc.) into the events table for event #1
+const legacy = {
+  name:     db.prepare("SELECT value FROM config WHERE key = 'event_name'").get()?.value,
+  venue:    db.prepare("SELECT value FROM config WHERE key = 'event_venue'").get()?.value,
+  date:     db.prepare("SELECT value FROM config WHERE key = 'event_date'").get()?.value,
+  capacity: db.prepare("SELECT value FROM config WHERE key = 'event_capacity'").get()?.value,
+  idle:     db.prepare("SELECT value FROM config WHERE key = 'idle_video'").get()?.value,
+};
+const ev1 = db.prepare("SELECT * FROM events WHERE id = 1").get();
+if (ev1) {
+  const updates = [];
+  const params  = [];
+  if (legacy.name     && !ev1.name?.trim())   { updates.push('name = ?');       params.push(legacy.name); }
+  if (legacy.venue    && !ev1.venue?.trim())  { updates.push('venue = ?');      params.push(legacy.venue); }
+  if (legacy.date     && !ev1.date?.trim())   { updates.push('date = ?');       params.push(legacy.date); }
+  if (legacy.capacity && !ev1.capacity)        { updates.push('capacity = ?');   params.push(Number(legacy.capacity) || 0); }
+  if (legacy.idle     && !ev1.idle_video)      { updates.push('idle_video = ?'); params.push(legacy.idle); }
+  // Make event #1 active by default (if no other active event exists)
+  if (ev1.status === 'draft' || !ev1.status)   { updates.push("status = 'active'"); }
+  if (updates.length) {
+    params.push(1);
+    db.prepare(`UPDATE events SET ${updates.join(', ')} WHERE id = ?`).run(...params);
+    console.log('[db] event #1 backfilled from legacy config');
   }
 }
 

@@ -40,6 +40,7 @@ export function WSProvider({ children }) {
       ws.onopen = () => {
         if (cancelledRef.current) { ws.close(); return; }
         setConnected(true);
+        try { ws.send(JSON.stringify({ type: 'HELLO', role: 'admin' })); } catch {}
       };
 
       ws.onclose = () => {
