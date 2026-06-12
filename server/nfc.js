@@ -54,6 +54,7 @@ export async function startNFC() {
 
     reader.on('card', (card) => {
       const uid = normalizeUID(card.uid);
+      console.log(`[NFC] [Lector: ${reader.name}] Tarjeta detectada. UID original: ${card.uid} -> Normalizado: ${uid}`);
       handleTag(uid);
     });
 
@@ -85,6 +86,7 @@ export async function startNFC() {
 
 export function handleTag(uid) {
   const normalized = normalizeUID(uid);
+  console.log(`[NFC] [Manejador] Procesando UID: ${normalized} (Modo Asignación: ${assignMode})`);
   const now = Date.now();
 
   if (lastTagTime[normalized] && now - lastTagTime[normalized] < TAG_DEBOUNCE_MS) {

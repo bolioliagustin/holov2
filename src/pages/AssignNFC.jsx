@@ -12,8 +12,8 @@ function normalizeUID(raw) {
 export default function AssignNFC() {
   const toast = useToast();
   const { on } = useWS();
-  const [queue, setQueue]     = useState([]);
-  const [current, setCurrent] = useState(null);
+  const [allGuests, setAllGuests] = useState([]);
+  const [selectedTable, setSelectedTable] = useState('');
   const [manualUID, setManualUID] = useState('');
   const [active, setActive]   = useState(false);
   const [lastAssigned, setLastAssigned] = useState(null);
@@ -21,18 +21,39 @@ export default function AssignNFC() {
   const timerRef = useRef(null);
 
   const loadQueue = () => {
-    fetch(`${API}/guests?status=pend&limit=200`)
+    fetch(`${API}/guests?status=pend&limit=1000`)
       .then((r) => r.json())
       .then((d) => {
         const noUid = (d.rows || []).filter((g) => !g.uid);
-        setQueue(noUid);
-        if (noUid.length > 0) setCurrent(noUid[0]);
-        else setCurrent(null);
+        setAllGuests(noUid);
       })
       .catch(() => {});
   };
 
-  useEffect(() => { loadQueue(); }, []);
+  useEffect(() => {
+    loadQueue();
+    // Asegurar que al salir de la pantalla se desactive el modo asignación en el backend
+    return () => {
+      fetch(`${API}/nfc/assign-mode`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ active: false }),
+      }).catch(() => {});
+    };
+  }, []);
+
+  const tables = Array.from(new Set(allGuests.map(g => g.table_num).filter(t => t))).sort((a, b) => {
+    const numA = parseInt(a, 10);
+    const numB = parseInt(b, 10);
+    if (!isNaN(numA) && !isNaN(numB)) return numA - numB;
+    return String(a).localeCompare(String(b));
+  });
+
+  const queue = selectedTable
+    ? allGuests.filter((g) => g.table_num === selectedTable)
+    : allGuests;
+
+  const current = queue[0] || null;
 
   useEffect(() => {
     if (!active) return;
@@ -64,7 +85,7 @@ export default function AssignNFC() {
     const normalized = normalizeUID(uid);
     if (!normalized) { toast('UID inválido', 'warning'); return; }
 
-    const guest = queue.find((g) => g.id === guestId);
+    const guest = allGuests.find((g) => g.id === guestId);
     fetch(`${API}/guests/assign-uid`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -80,22 +101,16 @@ export default function AssignNFC() {
         toast(`UID asignado a ${guest?.name}`, 'success');
         setManualUID('');
         setTimer(0);
-        setQueue((prev) => {
-          const rest = prev.filter((g) => g.id !== guestId);
-          setCurrent(rest[0] || null);
-          return rest;
-        });
+        setAllGuests((prev) => prev.filter((g) => g.id !== guestId));
       })
       .catch(() => toast('Error asignando UID', 'danger'));
   };
 
   const skip = () => {
-    setQueue((prev) => {
-      if (prev.length <= 1) return prev;
-      const [first, ...rest] = prev;
-      const requeued = [...rest, first];
-      setCurrent(requeued[0]);
-      return requeued;
+    if (!current) return;
+    setAllGuests((prev) => {
+      const rest = prev.filter((g) => g.id !== current.id);
+      return [...rest, current];
     });
     setTimer(0);
     toast('Invitado saltado', 'warning');
@@ -131,8 +146,27 @@ export default function AssignNFC() {
         <div style={{ display: 'grid', gridTemplateColumns: '1.3fr 1fr', flex: 1, minHeight: 0 }}>
           {/* Left: current guest + reader */}
           <section style={{ padding: '28px 36px', borderRight: '1px solid var(--line)', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-            <div className="mono" style={{ fontSize: 10, letterSpacing: '0.12em', color: 'var(--ink-mute)' }}>
-              VINCULANDO AHORA
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+              <div className="mono" style={{ fontSize: 10, letterSpacing: '0.12em', color: 'var(--ink-mute)' }}>
+                VINCULANDO AHORA
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontSize: 12, fontWeight: 600 }}>Filtrar Mesa:</span>
+                <select
+                  value={selectedTable}
+                  onChange={(e) => { setSelectedTable(e.target.value); setTimer(0); }}
+                  style={{
+                    background: 'var(--surface-2)', border: '1px solid var(--line)',
+                    borderRadius: 'var(--radius-sm)', padding: '4px 8px', fontSize: 12,
+                    fontWeight: 600, color: 'var(--ink)'
+                  }}
+                >
+                  <option value="">Todas las mesas</option>
+                  {tables.map((t) => (
+                    <option key={t} value={t}>Mesa {t}</option>
+                  ))}
+                </select>
+              </div>
             </div>
 
             {current ? (
@@ -148,8 +182,24 @@ export default function AssignNFC() {
                 </div>
               </div>
             ) : (
-              <div style={{ marginTop: 24, padding: '24px 0', borderBottom: '1px solid var(--line)', color: 'var(--ink-mute)', fontSize: 15 }}>
-                ✓ Todos los invitados tienen UID asignado.
+              <div style={{ marginTop: 24, padding: '24px 0', borderBottom: '1px solid var(--line)' }}>
+                <div style={{ color: 'var(--success-500)', fontSize: 15, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span>✓</span> Todos los invitados {selectedTable ? `de la Mesa ${selectedTable}` : ''} tienen UID asignado.
+                </div>
+                {selectedTable && tables.length > 0 && (
+                  <div style={{ marginTop: 16 }}>
+                    <Btn
+                      variant="primary"
+                      size="sm"
+                      onClick={() => {
+                        setSelectedTable(tables[0]);
+                        setTimer(0);
+                      }}
+                    >
+                      Ir a la Mesa {tables[0]} →
+                    </Btn>
+                  </div>
+                )}
               </div>
             )}
 

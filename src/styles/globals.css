@@ -553,3 +553,39 @@ select.select:focus { outline: none; border-color: var(--accent); box-shadow: va
   background: var(--accent-soft);
   border-bottom: 1px solid var(--accent-soft-2);
 }
+
+/* Table action buttons with premium hover states */
+.table-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--ink-mute);
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-out);
+}
+.table-action-btn:hover {
+  background: var(--surface-3);
+  border-color: var(--line-strong);
+  color: var(--ink);
+}
+.table-action-btn--edit:hover {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: var(--accent-soft-2);
+}
+.table-action-btn--reset:hover {
+  color: var(--warning-500);
+  background: var(--warning-50);
+  border-color: rgba(184,113,0,0.2);
+}
+.table-action-btn--delete:hover {
+  color: var(--danger-500);
+  background: var(--danger-50);
+  border-color: rgba(196,34,28,0.2);
+}
+

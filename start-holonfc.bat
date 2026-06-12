@@ -16,6 +16,10 @@ REM ── 1. Levantar el servidor (background) ──────────�
 echo [HoloNFC] Iniciando servidor backend...
 start "HoloNFC server" /MIN cmd /c "npm run server"
 
+REM ── 1b. Levantar el puente NFC físico (background) ───────────────────
+echo [HoloNFC] Iniciando puente NFC...
+start "HoloNFC Bridge" /MIN powershell -NoProfile -ExecutionPolicy Bypass -File .\nfc-bridge.ps1
+
 REM ── 2. Esperar a que el puerto 3000 responda ──────────────────────────
 echo [HoloNFC] Esperando a que el servidor este listo...
 :waitloop

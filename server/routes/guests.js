@@ -12,7 +12,7 @@ function normalizeUID(raw) {
 
 router.get('/', (req, res) => {
   const eventId = getCurrentEventId();
-  const { search, status, page = 1, limit = 50 } = req.query;
+  const { search, status, table, page = 1, limit = 50 } = req.query;
   const offset = (Number(page) - 1) * Number(limit);
 
   let where = 'WHERE event_id = ?';
@@ -25,11 +25,21 @@ router.get('/', (req, res) => {
   }
   if (status === 'in')   { where += ' AND checked_in = 1'; }
   if (status === 'pend') { where += ' AND checked_in = 0'; }
+  if (table) {
+    where += ' AND table_num = ?';
+    params.push(table);
+  }
 
   const total = db.prepare(`SELECT COUNT(*) as n FROM guests ${where}`).get(...params).n;
   const rows  = db.prepare(`SELECT * FROM guests ${where} ORDER BY id LIMIT ? OFFSET ?`).all(...params, Number(limit), offset);
 
   res.json({ total, page: Number(page), limit: Number(limit), rows });
+});
+
+router.get('/tables', (req, res) => {
+  const eventId = getCurrentEventId();
+  const rows = db.prepare("SELECT DISTINCT table_num FROM guests WHERE event_id = ? AND table_num != '' AND table_num IS NOT NULL ORDER BY table_num").all(eventId);
+  res.json(rows.map(r => r.table_num));
 });
 
 router.post('/', (req, res) => {
@@ -92,14 +102,15 @@ router.post('/clear-uids', (req, res) => {
   db.prepare("UPDATE guests SET uid = '' WHERE event_id = ?").run(eventId);
   res.json({ ok: true });
 });
-
 router.post('/assign-uid', (req, res) => {
   const eventId = getCurrentEventId();
   const { id, uid } = req.body;
-  if (!id || !uid) return res.status(400).json({ error: 'id and uid required' });
+  if (id === undefined || uid === undefined) return res.status(400).json({ error: 'id and uid required' });
   const normalized = normalizeUID(uid);
-  const clash = db.prepare('SELECT id, name FROM guests WHERE uid = ? AND id != ? AND event_id = ? LIMIT 1').get(normalized, id, eventId);
-  if (clash) return res.status(409).json({ error: `UID ya asignado a: ${clash.name}` });
+  if (normalized) {
+    const clash = db.prepare('SELECT id, name FROM guests WHERE uid = ? AND id != ? AND event_id = ? LIMIT 1').get(normalized, id, eventId);
+    if (clash) return res.status(409).json({ error: `UID ya asignado a: ${clash.name}` });
+  }
   db.prepare('UPDATE guests SET uid = ? WHERE id = ? AND event_id = ?').run(normalized, id, eventId);
   res.json({ ok: true, uid: normalized });
 });
@@ -111,6 +122,24 @@ router.post('/simulate-checkin/:id', (req, res) => {
   if (!g.uid) return res.status(400).json({ error: 'no UID assigned' });
   handleTag(g.uid);
   res.json({ ok: true });
+});
+
+router.post('/bulk-video', (req, res) => {
+  const eventId = getCurrentEventId();
+  const { ids, video } = req.body;
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return res.status(400).json({ error: 'ids array required' });
+  }
+
+  const stmt = db.prepare('UPDATE guests SET video = ? WHERE id = ? AND event_id = ?');
+  const updateMany = db.transaction((idsList, videoVal) => {
+    for (const id of idsList) {
+      stmt.run(videoVal, id, eventId);
+    }
+  });
+
+  updateMany(ids, video || '');
+  res.json({ ok: true, count: ids.length });
 });
 
 router.post('/import-csv', (req, res) => {
