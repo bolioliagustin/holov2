@@ -62,6 +62,23 @@ def hex_to_bgr(hex_color):
     return (b, g, r)
 
 
+def get_ffmpeg_command():
+    import shutil
+    cmd = shutil.which('ffmpeg')
+    if cmd:
+        return cmd
+    if sys.platform == 'win32':
+        local_appdata = os.environ.get('LOCALAPPDATA', '')
+        if local_appdata:
+            winget_packages = os.path.join(local_appdata, 'Microsoft', 'WinGet', 'Packages')
+            if os.path.exists(winget_packages):
+                for root, dirs, files in os.walk(winget_packages):
+                    if 'ffmpeg.exe' in files:
+                        return os.path.join(root, 'ffmpeg.exe')
+    return 'ffmpeg'
+
+
+
 def process(args):
     try:
         import cv2
@@ -174,8 +191,10 @@ def process(args):
     print("PROGRESS:93", flush=True)
     os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
 
+    ffmpeg_cmd = get_ffmpeg_command()
+
     r = subprocess.run([
-        'ffmpeg', '-y',
+        ffmpeg_cmd, '-y',
         '-i', tmp_video,
         '-i', args.input,
         '-c:v', 'libx264', '-preset', 'fast', '-crf', '20',
@@ -188,7 +207,7 @@ def process(args):
     if r.returncode != 0:
         # Probably no audio in source — fallback to video-only
         r2 = subprocess.run([
-            'ffmpeg', '-y',
+            ffmpeg_cmd, '-y',
             '-i', tmp_video,
             '-c:v', 'libx264', '-preset', 'fast', '-crf', '20',
             args.output,

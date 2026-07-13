@@ -4,7 +4,7 @@ import { join, extname, basename } from 'path';
 import { fileURLToPath } from 'url';
 import { dirname, resolve } from 'path';
 import { existsSync, unlinkSync } from 'fs';
-import { spawn } from 'child_process';
+import { spawn, execSync } from 'child_process';
 import db from '../db.js';
 import { broadcast } from '../ws.js';
 import { getCurrentEventId } from '../eventCtx.js';
@@ -196,9 +196,19 @@ function runProcessor(item) {
   ];
   if (item.holo_boost) args.push('--holo-boost');
 
+  let pythonCmd = 'python';
+  if (process.platform === 'win32') {
+    try {
+      execSync('py --version', { stdio: 'ignore' });
+      pythonCmd = 'py';
+    } catch (e) {
+      pythonCmd = 'python';
+    }
+  }
+
   let proc;
   try {
-    proc = spawn('python', args);
+    proc = spawn(pythonCmd, args);
   } catch (e) {
     console.error('[videos] spawn failed:', e.message);
     db.prepare("UPDATE video_queue SET status='error', error_msg=? WHERE id=?").run(`No se pudo iniciar Python: ${e.message}`, item.id);
