@@ -356,9 +356,14 @@
     guestVideo.onerror = null;
     hideFallback();
 
-    // Idle never stops — just bring it back to foreground
+    // Bring idle back to foreground
     idle.classList.remove('hidden');
     active.classList.remove('show');
+
+    // Resume idle video
+    if (idleVideo.paused) {
+      idleVideo.play().catch(e => console.warn('[projector] idle play:', e));
+    }
 
     // Clean up guest video shortly after fade-out completes
     setTimeout(() => {
@@ -393,8 +398,13 @@
     const FALLBACK_DURATION = 6000;
 
     function reveal() {
-      // Start guest video timer + crossfade — idle keeps running underneath
+      // Start guest video timer + crossfade
       active.classList.add('show');
+
+      // Pause idle video to prevent audio overlap
+      if (!idleVideo.paused) {
+        idleVideo.pause();
+      }
 
       const startTs = Date.now();
       progressTimer = setInterval(() => {
