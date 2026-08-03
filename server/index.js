@@ -52,6 +52,18 @@ app.post('/api/nfc/trigger', (req, res) => {
   res.json({ ok: true });
 });
 
+// Proyector: siempre desde public/ (fuente de verdad) + sin caché del browser
+const PROJECTOR = join(__dirname, '..', 'public', 'projector.html');
+app.get(['/projector.html', '/projector'], (req, res) => {
+  res.set({
+    'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+    Pragma: 'no-cache',
+    Expires: '0',
+    'Surrogate-Control': 'no-store',
+  });
+  res.sendFile(PROJECTOR);
+});
+
 // Serve built frontend in production
 const DIST = join(__dirname, '..', 'dist');
 app.use(express.static(DIST));

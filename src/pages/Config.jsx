@@ -19,6 +19,7 @@ export default function Config() {
   const [cfg, setCfg] = useState({
     holo_screen: '', idle_video: '', sim_mode: '0',
     event_name: '', event_venue: '', event_date: '', event_capacity: '0',
+    xfade_ms: '100', xfade_offset_ms: '0', xfade_auto: '1',
   });
   const [screens, setScreens] = useState([
     { id: 'HDMI-1', name: 'Monitor principal', res: '1920×1080' },
@@ -27,6 +28,7 @@ export default function Config() {
   ]);
   const [idleVideos, setIdleVideos] = useState([]);
   const [saving, setSaving] = useState(false);
+  const [xfadeStats, setXfadeStats] = useState(null);
 
   useEffect(() => {
     fetch(`${API}/config`).then((r) => r.json()).then(setCfg).catch(() => {});
@@ -35,6 +37,12 @@ export default function Config() {
     }).catch(() => {});
   }, []);
 
+  useEffect(() => {
+    const off = on('TRANSITION_STATS', (ev) => {
+      setXfadeStats(ev);
+    });
+    return off;
+  }, [on]);
   const save = () => {
     setSaving(true);
     fetch(`${API}/config`, {
@@ -68,7 +76,7 @@ export default function Config() {
       <header className="topbar">
         <div>
           <div className="topbar__title">Configuración del sistema</div>
-          <div className="topbar__sub">HARDWARE · SIMULACIÓN · VIDEO DE ESPERA</div>
+          <div className="topbar__sub">HARDWARE · TRANSICIÓN · VIDEO DE ESPERA</div>
         </div>
         <div className="topbar__actions">
           <Btn variant="primary" size="sm" onClick={save} disabled={saving}>
@@ -200,10 +208,91 @@ export default function Config() {
           </div>
         </div>
 
+        {/* Transición holográfica */}
+        <div className="section-2col">
+          <div>
+            <div className="section-2col__label">04 · Transición</div>
+            <div className="section-2col__title">Micro-crossfade</div>
+            <div className="section-2col__desc">
+              Aplica a videos con IA y ya editados. El proyector analiza luminancia
+              de frames para elegir el momento del swap; el desfase lo afinás a mano.
+            </div>
+          </div>
+          <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600 }}>Análisis automático de frame</div>
+                <div className="mono" style={{ fontSize: 10, color: 'var(--ink-mute)', marginTop: 2 }}>
+                  Espera el frame donde idle y guest están más parecidos en brillo
+                </div>
+              </div>
+              <Toggle
+                on={cfg.xfade_auto !== '0'}
+                onChange={(v) => set('xfade_auto', v ? '1' : '0')}
+              />
+            </label>
+
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6, display: 'flex', justifyContent: 'space-between' }}>
+                <span>Duración del crossfade</span>
+                <span className="mono" style={{ color: 'var(--ink-mute)' }}>{cfg.xfade_ms || 100} ms</span>
+              </div>
+              <input
+                type="range" min="40" max="200" step="10"
+                value={Number(cfg.xfade_ms) || 100}
+                onChange={(e) => set('xfade_ms', e.target.value)}
+                style={{ width: '100%' }}
+              />
+              <div className="mono" style={{ fontSize: 10, color: 'var(--ink-mute)', marginTop: 4 }}>
+                40 = casi hard cut · 100 = sutil (default) · 200 = más suave
+              </div>
+            </div>
+
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6, display: 'flex', justifyContent: 'space-between' }}>
+                <span>Desfase manual</span>
+                <span className="mono" style={{ color: 'var(--ink-mute)' }}>
+                  {Number(cfg.xfade_offset_ms) >= 0 ? '+' : ''}{cfg.xfade_offset_ms || 0} ms
+                </span>
+              </div>
+              <input
+                type="range" min="-100" max="250" step="10"
+                value={Number(cfg.xfade_offset_ms) || 0}
+                onChange={(e) => set('xfade_offset_ms', e.target.value)}
+                style={{ width: '100%' }}
+              />
+              <div className="mono" style={{ fontSize: 10, color: 'var(--ink-mute)', marginTop: 4 }}>
+                Negativo no retrocede el video; positivo espera más después del frame óptimo
+              </div>
+            </div>
+
+            <div style={{
+              padding: 12, background: 'var(--surface-2)', border: '1px solid var(--line)',
+              borderRadius: 2, fontSize: 12,
+            }}>
+              <div className="mono" style={{ fontSize: 10, color: 'var(--ink-mute)', letterSpacing: '0.12em', marginBottom: 8 }}>
+                ÚLTIMO SWAP (proyector)
+              </div>
+              {xfadeStats ? (
+                <div className="mono" style={{ fontSize: 11, lineHeight: 1.7, color: 'var(--ink)' }}>
+                  <div>Duración: {xfadeStats.xfadeMs} ms · Offset: {xfadeStats.offsetMs} ms</div>
+                  <div>Luminancia idle: {xfadeStats.idleLuma} · guest: {xfadeStats.guestLuma} · Δ {xfadeStats.delta}</div>
+                  <div>Espera auto: {xfadeStats.waitedMs ?? '—'} ms · {xfadeStats.auto ? 'AUTO' : 'MANUAL'}</div>
+                  {xfadeStats.direction && <div>Dirección: {xfadeStats.direction}</div>}
+                </div>
+              ) : (
+                <div style={{ color: 'var(--ink-mute)', fontSize: 12 }}>
+                  Abrí el proyector y hacé un check-in para ver el desfase medido en vivo.
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
         {/* Evento */}
         <div className="section-2col">
           <div>
-            <div className="section-2col__label">04 · Datos del evento</div>
+            <div className="section-2col__label">05 · Datos del evento</div>
             <div className="section-2col__title">Nombre y datos</div>
             <div className="section-2col__desc">
               El nombre se proyecta en la pantalla idle.

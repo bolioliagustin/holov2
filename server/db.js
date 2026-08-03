@@ -58,7 +58,21 @@ db.exec(`
   INSERT OR IGNORE INTO config VALUES ('event_venue', '');
   INSERT OR IGNORE INTO config VALUES ('event_date', '');
   INSERT OR IGNORE INTO config VALUES ('event_capacity', '0');
+  INSERT OR IGNORE INTO config VALUES ('xfade_ms', '100');
+  INSERT OR IGNORE INTO config VALUES ('xfade_offset_ms', '0');
+  INSERT OR IGNORE INTO config VALUES ('xfade_auto', '1');
+`);
 
+// Ensure transition keys exist on older DBs
+for (const [k, v] of [
+  ['xfade_ms', '100'],
+  ['xfade_offset_ms', '0'],
+  ['xfade_auto', '1'],
+]) {
+  db.prepare('INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)').run(k, v);
+}
+
+db.exec(`
   CREATE TABLE IF NOT EXISTS video_queue (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     filename    TEXT NOT NULL,
@@ -87,6 +101,7 @@ const migrations = [
   ['retry_count',  "INTEGER DEFAULT 0"],
   ['started_at',   "TEXT DEFAULT NULL"],
   ['event_id',     "INTEGER DEFAULT 1"],
+  ['passthrough',  "INTEGER DEFAULT 0"],
 ];
 for (const [col, def] of migrations) {
   if (!existingCols.has(col)) {

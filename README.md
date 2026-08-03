@@ -2,6 +2,9 @@
 
 Sistema de experiencias holográficas para eventos corporativos.
 
+**Onboarding técnico:** [Documento de Entendimiento](DOCUMENTO-ENTENDIMIENTO.md) — alcance, arquitectura, esquema, APIs y guía para contribuidores.  
+**Kiosk en venue:** [KIOSK-SETUP.md](KIOSK-SETUP.md)
+
 ## Requisitos
 
 - Node.js 18+

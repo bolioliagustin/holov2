@@ -84,22 +84,32 @@ function VideoThumb({ src, size = 'sm', onClick }) {
 
 // ─── Comparator: raw vs processed side-by-side ────────────────────────────
 function CompareModal({ item, onClose }) {
+  const isPassthrough = !!item.passthrough;
   return (
     <div onClick={onClose} style={{
       position: 'fixed', inset: 0, zIndex: 200, background: 'rgba(0,0,0,0.88)',
       display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24,
     }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ width: '100%', maxWidth: 1200 }}>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ width: '100%', maxWidth: isPassthrough ? 720 : 1200 }}>
+        {isPassthrough ? (
           <div>
-            <div className="mono" style={{ fontSize: 10, color: '#fff8', letterSpacing: '0.2em', marginBottom: 6 }}>ORIGINAL</div>
-            <video src={`/uploads/${item.filename}`} controls style={{ width: '100%', background: '#000' }} />
-          </div>
-          <div>
-            <div className="mono" style={{ fontSize: 10, color: 'var(--accent)', letterSpacing: '0.2em', marginBottom: 6 }}>PROCESADO</div>
+            <div className="mono" style={{ fontSize: 10, color: 'var(--accent)', letterSpacing: '0.2em', marginBottom: 6 }}>
+              YA EDITADO · SIN PROCESAR
+            </div>
             <video src={`/videos/${item.output}`} controls style={{ width: '100%', background: '#000' }} />
           </div>
-        </div>
+        ) : (
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div>
+              <div className="mono" style={{ fontSize: 10, color: '#fff8', letterSpacing: '0.2em', marginBottom: 6 }}>ORIGINAL</div>
+              <video src={`/uploads/${item.filename}`} controls style={{ width: '100%', background: '#000' }} />
+            </div>
+            <div>
+              <div className="mono" style={{ fontSize: 10, color: 'var(--accent)', letterSpacing: '0.2em', marginBottom: 6 }}>PROCESADO</div>
+              <video src={`/videos/${item.output}`} controls style={{ width: '100%', background: '#000' }} />
+            </div>
+          </div>
+        )}
         <div style={{ textAlign: 'right', marginTop: 12 }}>
           <button onClick={onClose} style={{
             color: '#fff', background: 'none', border: '1px solid #fff4',
@@ -213,6 +223,7 @@ export default function VideoIA() {
   const [showAssign, setShowAssign]   = useState(false);
 
   // Upload defaults
+  const [uploadMode, setUploadMode]   = useState('ai'); // 'ai' | 'passthrough'
   const [uploadBg, setUploadBg]       = useState('#000000');
   const [uploadCustom, setUploadCustom] = useState('');
   const [uploadFeather, setUploadFeather] = useState(5);
@@ -230,15 +241,24 @@ export default function VideoIA() {
   useEffect(() => {
     loadQueue();
     const off = on('VIDEO_STATUS', (ev) => {
-      setQueue((prev) => prev.map((item) =>
-        item.id === ev.id
-          ? { ...item, status: ev.status, progress: ev.progress,
-              output: ev.output || item.output, error_msg: ev.error || item.error_msg,
-              duration: ev.duration ?? item.duration,
-              width: ev.width ?? item.width, height: ev.height ?? item.height,
-              file_size: ev.file_size ?? item.file_size }
-          : item
-      ));
+      setQueue((prev) => {
+        const idx = prev.findIndex((item) => item.id === ev.id);
+        if (idx === -1) {
+          // New item from another tab / fast passthrough — refresh list
+          loadQueue();
+          return prev;
+        }
+        return prev.map((item) =>
+          item.id === ev.id
+            ? { ...item, status: ev.status, progress: ev.progress,
+                output: ev.output || item.output, error_msg: ev.error || item.error_msg,
+                duration: ev.duration ?? item.duration,
+                width: ev.width ?? item.width, height: ev.height ?? item.height,
+                file_size: ev.file_size ?? item.file_size,
+                passthrough: ev.passthrough ?? item.passthrough }
+            : item
+        );
+      });
     });
     return off;
   }, [on]);
@@ -249,14 +269,27 @@ export default function VideoIA() {
     if (!file) return;
     const form = new FormData();
     form.append('video', file);
-    form.append('bg_color',   uploadColor);
-    form.append('feather',    String(uploadFeather));
-    form.append('model',      uploadModel);
-    form.append('holo_boost', uploadBoost ? '1' : '');
+    form.append('mode', uploadMode);
+    if (uploadMode === 'ai') {
+      form.append('bg_color',   uploadColor);
+      form.append('feather',    String(uploadFeather));
+      form.append('model',      uploadModel);
+      form.append('holo_boost', uploadBoost ? '1' : '');
+    }
     fetch(`${API}/videos/upload`, { method: 'POST', body: form })
-      .then((r) => r.json())
-      .then(() => { toast(`Video en cola: ${file.name}`, 'success'); loadQueue(); })
-      .catch(() => toast('Error subiendo video', 'danger'));
+      .then(async (r) => {
+        const body = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(body.error || 'Error subiendo');
+        return body;
+      })
+      .then(() => {
+        toast(
+          uploadMode === 'passthrough' ? `Video listo: ${file.name}` : `Video en cola: ${file.name}`,
+          'success',
+        );
+        loadQueue();
+      })
+      .catch((e) => toast(e.message || 'Error subiendo video', 'danger'));
   };
 
   const handleFileInput = (e) => {
@@ -299,9 +332,13 @@ export default function VideoIA() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(settings),
     })
-      .then((r) => r.json())
+      .then(async (r) => {
+        const body = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(body.error || 'Error');
+        return body;
+      })
       .then(() => { toast('Reprocesando con nuevos ajustes…', 'success'); setEdit(null); })
-      .catch(() => toast('Error', 'danger'));
+      .catch((e) => toast(e.message || 'Error', 'danger'));
   };
 
   const bulkDelete = () => {
@@ -358,8 +395,8 @@ export default function VideoIA() {
 
       <header className="topbar">
         <div>
-          <div className="topbar__title">Procesador de video con IA</div>
-          <div className="topbar__sub">MEDIAPIPE · CROMA HOLOGRÁFICO · {queue.length} CLIPS</div>
+          <div className="topbar__title">Procesador de video</div>
+          <div className="topbar__sub">IA · YA EDITADOS · {queue.length} CLIPS</div>
         </div>
         <div className="topbar__actions">
           <Btn size="sm" onClick={() => fileRef.current?.click()}>+ Subir video</Btn>
@@ -367,6 +404,39 @@ export default function VideoIA() {
       </header>
 
       <div className="page-content" style={{ overflow: 'hidden', display: 'flex', flexDirection: 'column', padding: 0 }}>
+
+        {/* Upload mode */}
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 12,
+          padding: '10px 28px', borderBottom: '1px solid var(--line)',
+          background: 'var(--surface)',
+        }}>
+          <span className="mono" style={{ fontSize: 10, color: 'var(--ink-mute)', letterSpacing: '0.12em' }}>MODO</span>
+          {[
+            { k: 'ai',          l: 'Procesar con IA' },
+            { k: 'passthrough', l: 'Ya editado (solo guardar)' },
+          ].map((m) => (
+            <button
+              key={m.k}
+              type="button"
+              onClick={() => setUploadMode(m.k)}
+              style={{
+                padding: '6px 12px', fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                border: `1.5px solid ${uploadMode === m.k ? 'var(--accent)' : 'var(--line)'}`,
+                background: uploadMode === m.k ? 'var(--accent-soft)' : 'var(--surface-2)',
+                color: uploadMode === m.k ? 'var(--ink)' : 'var(--ink-mute)',
+                borderRadius: 2,
+              }}
+            >
+              {m.l}
+            </button>
+          ))}
+          {uploadMode === 'passthrough' && (
+            <span style={{ fontSize: 12, color: 'var(--ink-mute)' }}>
+              El video se usa tal cual en el proyector · sin MediaPipe
+            </span>
+          )}
+        </div>
 
         {/* Dropzone bar — always visible at top */}
         <div
@@ -391,53 +461,57 @@ export default function VideoIA() {
           <div style={{ flex: 1 }}>
             <div style={{ fontWeight: 700, fontSize: 14 }}>{dragging ? 'Soltá para subir' : 'Arrastrá videos aquí o hacé clic'}</div>
             <div className="mono" style={{ fontSize: 10, color: 'var(--ink-mute)', marginTop: 2 }}>
-              MP4, MOV · MAX 500MB · ajustes default: {uploadColor} · feather {uploadFeather}px · {uploadModel}{uploadBoost ? ' · BOOST' : ''}
+              {uploadMode === 'passthrough'
+                ? 'MP4, MOV · MAX 500MB · se guarda listo para asignar (sin editar)'
+                : `MP4, MOV · MAX 500MB · ajustes default: ${uploadColor} · feather ${uploadFeather}px · ${uploadModel}${uploadBoost ? ' · BOOST' : ''}`}
             </div>
           </div>
 
-          {/* Upload settings inline */}
-          <div onClick={(e) => e.stopPropagation()} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <div style={{ display: 'flex', gap: 4 }}>
-              {BG_PRESETS.slice(0, 5).map((p) => (
-                <button
-                  key={p.hex}
-                  onClick={() => { setUploadBg(p.hex); setUploadCustom(''); }}
-                  title={p.name}
-                  style={{
-                    width: 24, height: 24, background: p.hex, borderRadius: 2,
-                    border: `2px solid ${uploadColor === p.hex ? 'var(--accent)' : 'var(--line)'}`,
-                    cursor: 'pointer', padding: 0,
-                  }}
-                />
-              ))}
-            </div>
-            <input
-              placeholder="#______"
-              value={uploadCustom}
-              onChange={(e) => setUploadCustom(e.target.value)}
-              style={{ width: 80, height: 28, padding: '0 6px', border: '1px solid var(--line)', borderRadius: 2, background: 'var(--surface)', fontFamily: 'var(--font-mono)', fontSize: 11, outline: 'none' }}
-            />
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--ink-mute)' }}>
-              feather
+          {/* Upload settings inline — only for AI mode */}
+          {uploadMode === 'ai' && (
+            <div onClick={(e) => e.stopPropagation()} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <div style={{ display: 'flex', gap: 4 }}>
+                {BG_PRESETS.slice(0, 5).map((p) => (
+                  <button
+                    key={p.hex}
+                    onClick={() => { setUploadBg(p.hex); setUploadCustom(''); }}
+                    title={p.name}
+                    style={{
+                      width: 24, height: 24, background: p.hex, borderRadius: 2,
+                      border: `2px solid ${uploadColor === p.hex ? 'var(--accent)' : 'var(--line)'}`,
+                      cursor: 'pointer', padding: 0,
+                    }}
+                  />
+                ))}
+              </div>
               <input
-                type="range" min="0" max="15" value={uploadFeather}
-                onChange={(e) => setUploadFeather(Number(e.target.value))}
-                style={{ width: 80 }}
+                placeholder="#______"
+                value={uploadCustom}
+                onChange={(e) => setUploadCustom(e.target.value)}
+                style={{ width: 80, height: 28, padding: '0 6px', border: '1px solid var(--line)', borderRadius: 2, background: 'var(--surface)', fontFamily: 'var(--font-mono)', fontSize: 11, outline: 'none' }}
               />
-              <span className="mono" style={{ width: 22, textAlign: 'right' }}>{uploadFeather}</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--ink-mute)' }}>
+                feather
+                <input
+                  type="range" min="0" max="15" value={uploadFeather}
+                  onChange={(e) => setUploadFeather(Number(e.target.value))}
+                  style={{ width: 80 }}
+                />
+                <span className="mono" style={{ width: 22, textAlign: 'right' }}>{uploadFeather}</span>
+              </div>
+              <select
+                value={uploadModel}
+                onChange={(e) => setUploadModel(e.target.value)}
+                className="select"
+                style={{ height: 28, fontSize: 11 }}
+              >
+                {MODELS.map((m) => <option key={m.key} value={m.key}>{m.label}</option>)}
+              </select>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--ink-mute)' }}>
+                boost <Toggle on={uploadBoost} onChange={setUploadBoost} />
+              </label>
             </div>
-            <select
-              value={uploadModel}
-              onChange={(e) => setUploadModel(e.target.value)}
-              className="select"
-              style={{ height: 28, fontSize: 11 }}
-            >
-              {MODELS.map((m) => <option key={m.key} value={m.key}>{m.label}</option>)}
-            </select>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--ink-mute)' }}>
-              boost <Toggle on={uploadBoost} onChange={setUploadBoost} />
-            </label>
-          </div>
+          )}
           <input ref={fileRef} type="file" accept="video/*" multiple onChange={handleFileInput} style={{ display: 'none' }} />
         </div>
 
@@ -522,7 +596,13 @@ export default function VideoIA() {
                     <div style={{ fontWeight: 600, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {item.original}
                     </div>
-                    <div className="mono" style={{ fontSize: 10, color: 'var(--ink-mute)', display: 'flex', gap: 8, marginTop: 2 }}>
+                    <div className="mono" style={{ fontSize: 10, color: 'var(--ink-mute)', display: 'flex', gap: 8, marginTop: 2, alignItems: 'center', flexWrap: 'wrap' }}>
+                      {!!item.passthrough && (
+                        <span style={{
+                          color: 'var(--accent)', border: '1px solid var(--accent)',
+                          padding: '0 5px', borderRadius: 2, letterSpacing: '0.06em',
+                        }}>SIN IA</span>
+                      )}
                       {item.status === 'done' && (
                         <>
                           <span>{fmtDuration(item.duration)}</span>
@@ -553,14 +633,20 @@ export default function VideoIA() {
               <>
                 {/* Header */}
                 <div style={{ padding: '18px 24px', borderBottom: '1px solid var(--line)', flexShrink: 0 }}>
-                  <div className="mono" style={{ fontSize: 10, color: 'var(--ink-mute)', letterSpacing: '0.12em' }}>
-                    {selected.status === 'done' ? 'LISTO' : selected.status.toUpperCase()}
+                  <div className="mono" style={{ fontSize: 10, color: 'var(--ink-mute)', letterSpacing: '0.12em', display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <span>{selected.status === 'done' ? 'LISTO' : selected.status.toUpperCase()}</span>
+                    {!!selected.passthrough && (
+                      <span style={{ color: 'var(--accent)', letterSpacing: '0.08em' }}>· SIN IA</span>
+                    )}
                   </div>
                   <div style={{ fontWeight: 700, fontSize: 18, marginTop: 4 }}>{selected.original}</div>
                   <div className="mono" style={{ fontSize: 10, color: 'var(--ink-mute)', marginTop: 4 }}>
                     {selected.status === 'done' && (
                       <>
-                        {fmtDuration(selected.duration)} · {selected.width}×{selected.height} · {fmtBytes(selected.file_size)}
+                        {fmtDuration(selected.duration)}
+                        {selected.width > 0 ? ` · ${selected.width}×${selected.height}` : ''}
+                        {' · '}{fmtBytes(selected.file_size)}
+                        {selected.passthrough ? ' · subido sin procesar' : ''}
                       </>
                     )}
                   </div>
@@ -597,7 +683,9 @@ export default function VideoIA() {
                   {selected.status === 'done' && (
                     <>
                       <Btn size="sm" onClick={() => setShowAssign(true)}>Asignar a invitado</Btn>
-                      <Btn variant="ghost" size="sm" onClick={() => setShowCompare(true)}>Comparar antes/después</Btn>
+                      {!selected.passthrough && (
+                        <Btn variant="ghost" size="sm" onClick={() => setShowCompare(true)}>Comparar antes/después</Btn>
+                      )}
                       <a href={`/videos/${selected.output}`} download style={{ textDecoration: 'none' }}>
                         <Btn variant="ghost" size="sm">↓ Descargar</Btn>
                       </a>
@@ -606,14 +694,25 @@ export default function VideoIA() {
                   {selected.status === 'processing' && (
                     <Btn variant="danger-ghost" size="sm" onClick={() => cancelItem(selected.id)}>Cancelar</Btn>
                   )}
-                  {selected.status === 'error' && (
+                  {selected.status === 'error' && !selected.passthrough && (
                     <Btn size="sm" onClick={() => retryItem(selected.id)}>Reintentar</Btn>
                   )}
                   <Btn variant="danger-ghost" size="sm" onClick={() => deleteItem(selected.id)}>Eliminar</Btn>
                 </div>
 
-                {/* Settings panel — edit + reprocess */}
-                {edit && selected.status !== 'processing' && (
+                {/* Passthrough note */}
+                {selected.passthrough && selected.status === 'done' && (
+                  <div style={{
+                    margin: '0 24px 18px', padding: '12px 14px',
+                    background: 'var(--accent-soft)', border: '1px solid var(--accent)',
+                    borderRadius: 2, fontSize: 12, color: 'var(--ink)',
+                  }}>
+                    Video subido <strong>sin procesar</strong>. Ya está en la librería del proyector; podés asignarlo a un invitado o usarlo como idle.
+                  </div>
+                )}
+
+                {/* Settings panel — edit + reprocess (AI uploads only) */}
+                {edit && selected.status !== 'processing' && !selected.passthrough && (
                   <div style={{ borderTop: '1px solid var(--line)', padding: '18px 24px', overflow: 'auto', flex: 1 }}>
                     <div className="mono" style={{ fontSize: 10, color: 'var(--ink-mute)', letterSpacing: '0.12em', marginBottom: 14 }}>
                       AJUSTES DE PROCESAMIENTO

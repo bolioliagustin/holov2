@@ -3,8 +3,8 @@ import multer from 'multer';
 import { join, extname, basename } from 'path';
 import { fileURLToPath } from 'url';
 import { dirname, resolve } from 'path';
-import { existsSync, unlinkSync } from 'fs';
-import { spawn, execSync } from 'child_process';
+import { existsSync, unlinkSync, copyFileSync, mkdirSync, statSync } from 'fs';
+import { spawn, spawnSync, execSync } from 'child_process';
 import db from '../db.js';
 import { broadcast } from '../ws.js';
 import { getCurrentEventId } from '../eventCtx.js';
@@ -35,6 +35,58 @@ const router = Router();
 const MAX_CONCURRENT = 1; // single-stream by default; bump to 2 if CPU permits
 const running = new Map(); // id → ChildProcess
 
+function probeVideoMeta(filePath) {
+  const file_size = existsSync(filePath) ? statSync(filePath).size : 0;
+  try {
+    const r = spawnSync('ffprobe', [
+      '-v', 'quiet',
+      '-print_format', 'json',
+      '-show_format',
+      '-show_streams',
+      filePath,
+    ], { encoding: 'utf8', timeout: 15000 });
+    if (r.status !== 0 || !r.stdout) throw new Error(r.stderr || 'ffprobe failed');
+    const j = JSON.parse(r.stdout);
+    const v = (j.streams || []).find((s) => s.codec_type === 'video') || {};
+    return {
+      duration:  parseFloat(j.format?.duration || v.duration || 0) || 0,
+      width:     parseInt(v.width  || 0, 10) || 0,
+      height:    parseInt(v.height || 0, 10) || 0,
+      file_size: parseInt(j.format?.size || 0, 10) || file_size,
+    };
+  } catch {
+    return { duration: 0, width: 0, height: 0, file_size };
+  }
+}
+
+function finalizePassthrough(id, uploadedFilename, originalName) {
+  if (!existsSync(VIDEOS_DIR)) mkdirSync(VIDEOS_DIR, { recursive: true });
+  const ext = (extname(originalName) || extname(uploadedFilename) || '.mp4').toLowerCase();
+  const outputName = `ready_${id}_${Date.now()}${ext}`;
+  const src  = join(UPLOADS_DIR, uploadedFilename);
+  const dest = join(VIDEOS_DIR, outputName);
+  if (!existsSync(src)) throw new Error(`Archivo no encontrado: ${uploadedFilename}`);
+  copyFileSync(src, dest);
+  const meta = probeVideoMeta(dest);
+  db.prepare(
+    `UPDATE video_queue
+     SET status='done', progress=100, output=?,
+         duration=?, width=?, height=?, file_size=?, passthrough=1
+     WHERE id=?`
+  ).run(outputName, meta.duration, meta.width, meta.height, meta.file_size, id);
+  if (CLEANUP_RAW_AFTER_DONE && existsSync(src)) {
+    try { unlinkSync(src); } catch (e) {
+      console.warn(`[videos] passthrough cleanup failed for ${uploadedFilename}:`, e.message);
+    }
+  }
+  broadcast({
+    type: 'VIDEO_STATUS', id, status: 'done', progress: 100,
+    output: outputName, passthrough: 1,
+    duration: meta.duration, width: meta.width, height: meta.height, file_size: meta.file_size,
+  });
+  return { outputName, ...meta };
+}
+
 // ── Read endpoints (scoped to current event) ─────────────────────────────
 router.get('/queue', (req, res) => {
   const eventId = getCurrentEventId();
@@ -60,21 +112,39 @@ router.get('/:id', (req, res) => {
 router.post('/upload', upload.single('video'), (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file' });
   const eventId = getCurrentEventId();
+  const isPassthrough = req.body.mode === 'passthrough';
+
   const info = db.prepare(
-    `INSERT INTO video_queue (event_id, filename, original, status, bg_color, feather, model, holo_boost)
-     VALUES (?,?,?,?,?,?,?,?)`
+    `INSERT INTO video_queue (event_id, filename, original, status, bg_color, feather, model, holo_boost, passthrough)
+     VALUES (?,?,?,?,?,?,?,?,?)`
   ).run(
     eventId,
     req.file.filename,
     req.file.originalname,
-    'queued',
+    isPassthrough ? 'done' : 'queued',
     req.body.bg_color || '#000000',
     Number(req.body.feather ?? 5),
     req.body.model || 'selfie',
     req.body.holo_boost ? 1 : 0,
+    isPassthrough ? 1 : 0,
   );
 
-  res.json({ id: info.lastInsertRowid, filename: req.file.filename });
+  const id = Number(info.lastInsertRowid);
+
+  if (isPassthrough) {
+    try {
+      const result = finalizePassthrough(id, req.file.filename, req.file.originalname);
+      return res.json({ id, filename: req.file.filename, output: result.outputName, mode: 'passthrough' });
+    } catch (e) {
+      console.error('[videos] passthrough failed:', e);
+      db.prepare("UPDATE video_queue SET status='error', error_msg=?, progress=0 WHERE id=?")
+        .run(String(e.message || e), id);
+      broadcast({ type: 'VIDEO_STATUS', id, status: 'error', progress: 0, error: String(e.message || e) });
+      return res.status(500).json({ error: String(e.message || e) });
+    }
+  }
+
+  res.json({ id, filename: req.file.filename, mode: 'ai' });
   processNext();
 });
 
@@ -82,6 +152,11 @@ router.post('/upload', upload.single('video'), (req, res) => {
 router.post('/reprocess/:id', (req, res) => {
   const item = db.prepare('SELECT * FROM video_queue WHERE id = ?').get(req.params.id);
   if (!item) return res.status(404).json({ error: 'not found' });
+  if (item.passthrough) {
+    return res.status(400).json({
+      error: 'Video subido sin IA (ya editado). Volvé a subirlo en modo Procesar con IA.',
+    });
+  }
   if (running.has(item.id)) return res.status(409).json({ error: 'already processing' });
 
   const updates = {
@@ -141,6 +216,11 @@ router.post('/assign/:id', (req, res) => {
 router.post('/retry/:id', (req, res) => {
   const item = db.prepare('SELECT * FROM video_queue WHERE id = ?').get(req.params.id);
   if (!item) return res.status(404).json({ error: 'not found' });
+  if (item.passthrough) {
+    return res.status(400).json({
+      error: 'Video subido sin IA (ya editado). Volvé a subirlo en modo Procesar con IA.',
+    });
+  }
   db.prepare("UPDATE video_queue SET status='queued', progress=0, error_msg='', retry_count=0 WHERE id = ?").run(item.id);
   broadcast({ type: 'VIDEO_STATUS', id: item.id, status: 'queued', progress: 0 });
   res.json({ ok: true });
@@ -159,7 +239,7 @@ router.delete('/:id', (req, res) => {
 function processNext() {
   while (running.size < MAX_CONCURRENT) {
     const item = db.prepare(
-      "SELECT * FROM video_queue WHERE status='queued' ORDER BY id LIMIT 1"
+      "SELECT * FROM video_queue WHERE status='queued' AND COALESCE(passthrough,0)=0 ORDER BY id LIMIT 1"
     ).get();
     if (!item) return;
     runProcessor(item);

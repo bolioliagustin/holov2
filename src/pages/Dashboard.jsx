@@ -154,7 +154,7 @@ export default function Dashboard() {
   }, [on, reloadStats]);
 
   const openProjector = () => {
-    window.open('/projector.html', 'HoloNFC_Projector', 'width=1280,height=720');
+    window.open('/projector.html?v=xfade-1', 'HoloNFC_Projector', 'width=1280,height=720');
   };
 
   const pct = stats.total > 0 ? Math.round((stats.checkedIn / stats.total) * 100) : 0;

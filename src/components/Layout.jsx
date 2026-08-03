@@ -67,7 +67,7 @@ export default function Layout({ children }) {
           <span style={{ opacity: 0.85, fontWeight: 400 }}>· verificá la pantalla del holograma o esperá auto-recovery (30s)</span>
           <div style={{ flex: 1 }} />
           <a
-            href="/projector.html"
+            href="/projector.html?v=xfade-1"
             target="_blank"
             rel="noopener noreferrer"
             style={{ color: '#fff', textDecoration: 'underline', fontSize: 12 }}

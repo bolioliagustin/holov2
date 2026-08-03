@@ -4,6 +4,8 @@
 <meta charset="UTF-8" />
 <title>HoloNFC · Proyector</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="projector-build" content="xfade-1" />
+<meta http-equiv="Cache-Control" content="no-store" />
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@300;400;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
@@ -24,28 +26,68 @@
     background: #000;
   }
 
-  /* Both layers stacked, opacity-crossfade.
-     Fast transition (150ms) so the swap is perceptually instant. */
+  /* Layers: guest decodes under idle; micro-crossfade by fading idle opacity
+     (no black void — both images briefly overlap). */
   .layer {
     position: absolute;
     inset: 0;
     background: #000;
-    opacity: 0;
-    transition: opacity 150ms cubic-bezier(0.4, 0, 0.2, 1);
     pointer-events: none;
+    opacity: 1;
   }
-  .layer.show { opacity: 1; pointer-events: auto; }
 
-  #idle  { opacity: 1; }   /* idle visible by default */
+  #idle {
+    z-index: 2;
+    transition: opacity var(--xfade-ms, 100ms) ease-in-out;
+  }
+
+  #idle.is-fading {
+    opacity: 0;
+  }
+
+  #idle.is-under {
+    z-index: 0;
+    opacity: 0;
+    transition: none;
+  }
+
+  #active {
+    z-index: 1;
+    transition: opacity var(--xfade-ms, 100ms) ease-in-out;
+  }
+
+  #active.is-front {
+    z-index: 2;
+    pointer-events: auto;
+  }
+
+  #active.is-fading {
+    z-index: 3;
+    opacity: 0;
+  }
 
   .layer video {
     position: absolute;
     inset: 0;
     width: 100%;
     height: 100%;
-    object-fit: contain;          /* preserve aspect ratio */
+    object-fit: contain;
     object-position: center;
     background: #000;
+  }
+
+  /* Debug HUD (?ui=1): live luma / desfase */
+  #xfade-hud {
+    position: absolute;
+    left: 16px;
+    bottom: 16px;
+    z-index: 20;
+    font: 500 11px/1.4 'JetBrains Mono', monospace;
+    color: rgba(255,255,255,0.7);
+    background: rgba(0,0,0,0.55);
+    padding: 8px 10px;
+    letter-spacing: 0.04em;
+    max-width: 280px;
   }
 
   /* ─── UI overlay (only with ?ui=1) ─────────────────────────────────────── */
@@ -166,7 +208,7 @@
     display: flex; flex-direction: column;
     align-items: center; justify-content: center;
     opacity: 0;
-    transition: opacity 200ms ease;
+    transition: none;
     pointer-events: none;
     z-index: 5;
   }
@@ -204,7 +246,7 @@
 
   <!-- IDLE -->
   <div id="idle" class="layer">
-    <video id="idle-video" autoplay loop playsinline preload="auto"></video>
+    <video id="idle-video" loop playsinline preload="auto"></video>
     <div class="idle-logo ui-only">
       <div class="mark"></div>
       <h1>HoloNFC</h1>
@@ -214,7 +256,7 @@
 
   <!-- ACTIVE: guest hologram -->
   <div id="active" class="layer">
-    <video id="guest-video" autoplay playsinline preload="auto"></video>
+    <video id="guest-video" playsinline preload="auto"></video>
     <div class="live-badge ui-only"><span class="live-dot"></span>LIVE</div>
     <div class="event-badge ui-only" id="event-badge">HoloNFC</div>
     <div class="name-overlay ui-only" id="name-overlay" style="display:none">
@@ -225,6 +267,8 @@
     </div>
     <div class="progress-bar ui-only"><div class="progress-bar__fill" id="progress-fill" style="width:0"></div></div>
   </div>
+
+  <div id="xfade-hud" class="ui-only">xfade listo</div>
 
   <!-- Hidden pool for video preloading -->
   <div id="cache-pool"></div>
@@ -253,12 +297,20 @@
   let progressTimer = null;
   let config = {};
   let unmuted = false;
+  /** @type {'idle'|'guest'} Which layer owns playback/audio right now */
+  let displayMode = 'idle';
+  /** Bumps on every showGuest/showIdle to cancel stale async swaps */
+  let swapToken = 0;
   let lastCheckinUID = null;
   let lastCheckinTime = 0;
   const CHECKIN_DEBOUNCE_MS = 3000;
+  const FIRST_FRAME_MS = 2000;
+  const FALLBACK_DURATION = 6000;
+  const CONTENT_WAIT_MS = 900;
+  const EARLY_IDLE_SEC = 0.22;
 
   // ── DOM refs ──────────────────────────────────────────────────────────────
-  const idle          = document.getElementById('idle');
+  const idleEl        = document.getElementById('idle');
   const active        = document.getElementById('active');
   const idleVideo     = document.getElementById('idle-video');
   const guestVideo    = document.getElementById('guest-video');
@@ -271,6 +323,12 @@
   const eventNameIdle = document.getElementById('event-name-idle');
   const cachePool     = document.getElementById('cache-pool');
   const fallback      = document.getElementById('fallback');
+  const xfadeHud      = document.getElementById('xfade-hud');
+
+  const sampleCanvas = document.createElement('canvas');
+  const sampleCtx = sampleCanvas.getContext('2d', { willReadFrequently: true });
+
+  let lastTransitionStats = null;
 
   function showFallback(label) {
     fallback.querySelector('.fb-label').textContent = label || 'Procesando';
@@ -280,23 +338,390 @@
     fallback.classList.remove('show');
   }
 
-  // Report uncaught JS errors to the backend so the admin sees them
-  window.addEventListener('error', (ev) => {
+  function sleep(ms) {
+    return new Promise((r) => setTimeout(r, ms));
+  }
+
+  function getXfadeMs() {
+    const n = Number(config.xfade_ms);
+    return Number.isFinite(n) ? Math.max(40, Math.min(250, n)) : 100;
+  }
+  function getXfadeOffsetMs() {
+    const n = Number(config.xfade_offset_ms);
+    return Number.isFinite(n) ? Math.max(-200, Math.min(300, n)) : 0;
+  }
+  function isXfadeAuto() {
+    return config.xfade_auto !== '0';
+  }
+  function applyXfadeCssVar() {
+    document.documentElement.style.setProperty('--xfade-ms', getXfadeMs() + 'ms');
+  }
+
+  function updateXfadeHud(text) {
+    if (xfadeHud) xfadeHud.textContent = text;
+  }
+
+  function reportTransitionStats(stats) {
+    lastTransitionStats = { ...stats, ts: Date.now() };
+    updateXfadeHud(
+      `xfade ${stats.xfadeMs}ms · offset ${stats.offsetMs >= 0 ? '+' : ''}${stats.offsetMs}ms` +
+      ` · idleY ${stats.idleLuma} · guestY ${stats.guestLuma} · Δ ${stats.delta}` +
+      (stats.auto ? ' · AUTO' : ' · MANUAL')
+    );
     try {
       if (ws && ws.readyState === 1) {
-        ws.send(JSON.stringify({ type: 'PROJECTOR_ERROR', error: String(ev.message || ev.error || 'unknown') }));
+        ws.send(JSON.stringify({ type: 'TRANSITION_STATS', ...lastTransitionStats }));
       }
     } catch {}
-  });
+  }
 
-  // Start muted (browser autoplay policy)
-  idleVideo.muted  = true;
-  guestVideo.muted = true;
-  console.log('[projector] DOM ready, ui mode:', document.body.classList.contains('ui'));
+  /** Average luma 0–255 of a downscaled frame. */
+  function frameLuma(video) {
+    const vw = video.videoWidth;
+    const vh = video.videoHeight;
+    if (!vw || !vh) return 0;
+    const w = 64;
+    const h = Math.max(1, Math.round(64 * (vh / vw)));
+    sampleCanvas.width = w;
+    sampleCanvas.height = h;
+    try {
+      sampleCtx.drawImage(video, 0, 0, w, h);
+      const { data } = sampleCtx.getImageData(0, 0, w, h);
+      let sum = 0;
+      const n = w * h;
+      for (let i = 0; i < data.length; i += 4) {
+        sum += 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+      }
+      return Math.round(sum / n);
+    } catch {
+      return 0;
+    }
+  }
+
+  function frameHasContent(video) {
+    const vw = video.videoWidth;
+    const vh = video.videoHeight;
+    if (!vw || !vh) return false;
+    const w = 96;
+    const h = Math.max(1, Math.round(96 * (vh / vw)));
+    sampleCanvas.width = w;
+    sampleCanvas.height = h;
+    try {
+      sampleCtx.drawImage(video, 0, 0, w, h);
+      const { data } = sampleCtx.getImageData(0, 0, w, h);
+      let lit = 0;
+      const total = w * h;
+      for (let i = 0; i < data.length; i += 4) {
+        const y = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+        if (y > 16) lit++;
+      }
+      return lit > total * 0.01;
+    } catch {
+      return false;
+    }
+  }
+
+  function nextVideoFrame(video) {
+    return new Promise((resolve) => {
+      if (typeof video.requestVideoFrameCallback === 'function') {
+        try {
+          video.requestVideoFrameCallback(() => resolve());
+          return;
+        } catch {}
+      }
+      requestAnimationFrame(() => requestAnimationFrame(resolve));
+    });
+  }
+
+  /**
+   * Pick the best moment to start the micro-crossfade:
+   * wait until guest has visible content, then (if auto) prefer the frame where
+   * |luma(idle)-luma(guest)| is smallest within the remaining window.
+   * Manual offset is applied after that (positive = wait more).
+   */
+  async function awaitOptimalSwapMoment(token) {
+    const t0 = performance.now();
+    let best = { delta: Infinity, idleLuma: 0, guestLuma: 0, at: 0 };
+    let sawContent = false;
+    const auto = isXfadeAuto();
+    const maxMs = CONTENT_WAIT_MS;
+
+    while (performance.now() - t0 < maxMs) {
+      if (token !== swapToken) return null;
+      await nextVideoFrame(guestVideo);
+      const gY = frameLuma(guestVideo);
+      const iY = frameLuma(idleVideo);
+      const has = frameHasContent(guestVideo);
+      if (has) sawContent = true;
+      if (has || !auto) {
+        const delta = Math.abs(iY - gY);
+        if (delta < best.delta) {
+          best = { delta, idleLuma: iY, guestLuma: gY, at: performance.now() - t0 };
+        }
+        // Good enough match while guest already has content
+        if (auto && has && delta <= 12) break;
+        // Non-auto: first content frame is enough
+        if (!auto && has) break;
+      }
+    }
+
+    if (!sawContent) {
+      best = {
+        delta: Math.abs(frameLuma(idleVideo) - frameLuma(guestVideo)),
+        idleLuma: frameLuma(idleVideo),
+        guestLuma: frameLuma(guestVideo),
+        at: performance.now() - t0,
+      };
+    }
+
+    const offset = getXfadeOffsetMs();
+    if (offset > 0) await sleep(offset);
+    // Negative offset: we already waited during analysis; can't go back in time.
+    // Approximate by not waiting extra (already burned `at` ms).
+
+    return {
+      ...best,
+      waitedMs: Math.round(performance.now() - t0),
+      offsetMs: offset,
+      auto,
+      xfadeMs: getXfadeMs(),
+    };
+  }
+
+  function guestLayerVisible() {
+    return active.classList.contains('is-front') && !active.classList.contains('is-fading');
+  }
+
+  function silenceIdle() {
+    idleVideo.pause();
+    idleVideo.muted = true;
+    idleVideo.volume = 1;
+  }
+
+  function keepIdleCoverPlaying() {
+    if (idleVideo.src && idleVideo.paused) {
+      idleVideo.play().catch((e) => console.warn('[projector] idle cover play:', e));
+    }
+    if (displayMode === 'guest' && !guestLayerVisible()) {
+      idleVideo.muted = !unmuted;
+      if (unmuted) idleVideo.volume = 1;
+    }
+  }
+
+  function applyIdlePlayback() {
+    if (!config.idle_video || !idleVideo.src) return;
+    if (displayMode === 'guest' && guestLayerVisible()) {
+      silenceIdle();
+      return;
+    }
+    idleVideo.muted = !unmuted;
+    if (unmuted) idleVideo.volume = 1;
+    idleVideo.play().catch((err) => console.error('[projector] idle play:', err));
+  }
+
+  async function audioCrossfade(direction, ms) {
+    if (!unmuted) {
+      if (direction === 'toGuest') {
+        idleVideo.muted = true;
+        guestVideo.muted = false;
+        guestVideo.volume = 1;
+      } else {
+        guestVideo.muted = true;
+        idleVideo.muted = false;
+        idleVideo.volume = 1;
+      }
+      return;
+    }
+    const steps = Math.max(4, Math.round(ms / 25));
+    const dt = ms / steps;
+    idleVideo.muted = false;
+    guestVideo.muted = false;
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      if (direction === 'toGuest') {
+        idleVideo.volume = Math.max(0, 1 - t);
+        guestVideo.volume = Math.min(1, t);
+      } else {
+        guestVideo.volume = Math.max(0, 1 - t);
+        idleVideo.volume = Math.min(1, t);
+      }
+      if (i < steps) await sleep(dt);
+    }
+    if (direction === 'toGuest') {
+      idleVideo.muted = true;
+      idleVideo.volume = 1;
+      guestVideo.volume = 1;
+    } else {
+      guestVideo.muted = true;
+      guestVideo.volume = 1;
+      idleVideo.volume = 1;
+    }
+  }
+
+  function awaitFirstFrame(video, timeoutMs = FIRST_FRAME_MS) {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (ok) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        ok ? resolve() : reject(new Error('first-frame timeout'));
+      };
+      const timer = setTimeout(() => finish(false), timeoutMs);
+      if (typeof video.requestVideoFrameCallback === 'function') {
+        try {
+          video.requestVideoFrameCallback(() => finish(true));
+          return;
+        } catch {}
+      }
+      const paint = () => requestAnimationFrame(() => requestAnimationFrame(() => finish(true)));
+      if (!video.paused && video.readyState >= 2) {
+        paint();
+        return;
+      }
+      video.addEventListener('playing', () => paint(), { once: true });
+    });
+  }
+
+  function startProgress(hasVideo) {
+    if (progressTimer) { clearInterval(progressTimer); progressTimer = null; }
+    progressFill.style.width = '0';
+    const startTs = Date.now();
+    progressTimer = setInterval(() => {
+      let pct;
+      if (hasVideo && guestVideo.duration && isFinite(guestVideo.duration)) {
+        pct = (guestVideo.currentTime / guestVideo.duration) * 100;
+      } else {
+        pct = ((Date.now() - startTs) / FALLBACK_DURATION) * 100;
+      }
+      progressFill.style.width = Math.min(100, Math.max(0, pct)) + '%';
+    }, 80);
+  }
+
+  /** Micro-crossfade idle→guest: fade idle opacity over guest (no black void). */
+  async function crossfadeToGuest(hasVideo, stats) {
+    applyXfadeCssVar();
+    const ms = getXfadeMs();
+    if (stats) reportTransitionStats(stats);
+
+    const audioP = audioCrossfade('toGuest', ms);
+    idleEl.classList.add('is-fading');
+    await sleep(ms);
+    await audioP;
+
+    if (displayMode !== 'guest') return;
+
+    silenceIdle();
+    idleEl.classList.add('is-under');
+    idleEl.classList.remove('is-fading');
+    active.classList.add('is-front');
+    active.classList.remove('is-fading');
+    guestVideo.muted = !unmuted;
+    if (unmuted) guestVideo.volume = 1;
+    startProgress(hasVideo);
+    console.log('[projector] xfade → guest', ms + 'ms', stats || '');
+  }
+
+  /** Micro-crossfade guest→idle. */
+  async function crossfadeToIdle() {
+    const token = swapToken;
+    displayMode = 'idle';
+    applyXfadeCssVar();
+    const ms = getXfadeMs();
+
+    guestVideo.onended = null;
+    guestVideo.onerror = null;
+    guestVideo.ontimeupdate = null;
+    hideFallback();
+
+    // Put idle under guest, playing, then fade guest out
+    idleEl.classList.remove('is-under', 'is-fading');
+    idleEl.style.opacity = ''; // clear any inline
+    if (config.idle_video && idleVideo.src) {
+      idleVideo.muted = true;
+      try { await idleVideo.play(); } catch (e) {
+        console.warn('[projector] idle resume:', e);
+      }
+      try { await awaitFirstFrame(idleVideo, 1500); } catch {}
+    }
+
+    if (token !== swapToken) return;
+
+    // Ensure idle visible under; guest still on top
+    active.classList.add('is-front');
+    const audioP = audioCrossfade('toIdle', ms);
+    active.classList.add('is-fading');
+    await sleep(ms);
+    await audioP;
+
+    if (token !== swapToken) return;
+
+    active.classList.remove('is-front', 'is-fading');
+    idleVideo.muted = !unmuted;
+    if (unmuted) idleVideo.volume = 1;
+    guestVideo.pause();
+    guestVideo.muted = true;
+
+    reportTransitionStats({
+      xfadeMs: ms,
+      offsetMs: getXfadeOffsetMs(),
+      idleLuma: frameLuma(idleVideo),
+      guestLuma: 0,
+      delta: frameLuma(idleVideo),
+      auto: isXfadeAuto(),
+      waitedMs: 0,
+      direction: 'toIdle',
+    });
+
+    setTimeout(() => {
+      if (token !== swapToken || displayMode !== 'idle') return;
+      guestVideo.removeAttribute('src');
+      guestVideo.load();
+      nameOverlay.style.display = 'none';
+    }, 50);
+  }
+
+  async function prepareGuest(src) {
+    guestVideo.muted = true;
+    guestVideo.volume = 0;
+
+    const filename = src.slice(VIDEO_BASE.length);
+    const already = guestVideo.src && (
+      guestVideo.src === src ||
+      guestVideo.src.endsWith('/' + filename) ||
+      guestVideo.src.endsWith(filename)
+    );
+
+    if (!already) guestVideo.src = src;
+
+    if (guestVideo.readyState < 2) {
+      await new Promise((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error('canplay timeout')), FIRST_FRAME_MS);
+        let done = false;
+        const go = () => {
+          if (done) return;
+          done = true;
+          clearTimeout(t);
+          resolve();
+        };
+        guestVideo.addEventListener('canplay', go, { once: true });
+        guestVideo.addEventListener('canplaythrough', go, { once: true });
+        guestVideo.addEventListener('error', () => {
+          if (done) return;
+          done = true;
+          clearTimeout(t);
+          reject(new Error('guest load error'));
+        }, { once: true });
+        if (guestVideo.readyState >= 2) go();
+      });
+    }
+
+    try { guestVideo.currentTime = 0; } catch {}
+    await guestVideo.play();
+    await awaitFirstFrame(guestVideo);
+  }
 
   // ── Video preload pool ───────────────────────────────────────────────────
-  // Keeps a hidden <video preload="auto"> for every assigned guest video so
-  // the browser caches it. When a tag is scanned, the file is already buffered.
   const cached = new Set();
 
   function preloadVideo(filename) {
@@ -313,9 +738,9 @@
 
   async function preloadAllGuestVideos() {
     try {
-      const guests = await fetch(`${API}/guests?limit=2000`).then(r => r.json());
+      const guests = await fetch(`${API}/guests?limit=2000`).then((r) => r.json());
       const rows = guests.rows || guests || [];
-      const unique = new Set(rows.map(g => g.video).filter(Boolean));
+      const unique = new Set(rows.map((g) => g.video).filter(Boolean));
       console.log(`[projector] preloading ${unique.size} guest video(s)`);
       unique.forEach(preloadVideo);
     } catch (e) {
@@ -326,24 +751,29 @@
   // ── Config ────────────────────────────────────────────────────────────────
   async function loadConfig() {
     try {
-      config = await fetch(`${API}/config`).then(r => r.json());
+      config = await fetch(`${API}/config`).then((r) => r.json());
       console.log('[projector] config:', config);
+      applyXfadeCssVar();
+      updateXfadeHud(
+        `xfade ${getXfadeMs()}ms · offset ${getXfadeOffsetMs() >= 0 ? '+' : ''}${getXfadeOffsetMs()}ms` +
+        (isXfadeAuto() ? ' · AUTO frame' : ' · MANUAL')
+      );
       if (config.idle_video) {
         const newSrc = VIDEO_BASE + config.idle_video;
         if (!idleVideo.src.endsWith(config.idle_video)) {
           idleVideo.src = newSrc;
           idleVideo.loop = true;
         }
-        idleVideo.muted = !unmuted;
-        idleVideo.play().catch(err => console.error('[projector] idle play:', err));
+        applyIdlePlayback();
       } else {
-        idleVideo.src = '';
+        idleVideo.removeAttribute('src');
+        idleVideo.load();
       }
       if (config.event_name) {
         eventNameIdle.textContent = config.event_name;
         eventBadge.textContent = config.event_name.toUpperCase();
       }
-    } catch(e) {
+    } catch (e) {
       console.error('[projector] loadConfig error:', e);
     }
   }
@@ -352,35 +782,23 @@
   function showIdle() {
     if (progressTimer) { clearInterval(progressTimer); progressTimer = null; }
     if (idleTimer)     { clearTimeout(idleTimer);     idleTimer     = null; }
-    guestVideo.onended = null;
-    guestVideo.onerror = null;
-    hideFallback();
-
-    // Bring idle back to foreground
-    idle.classList.remove('hidden');
-    active.classList.remove('show');
-
-    // Resume idle video
-    if (idleVideo.paused) {
-      idleVideo.play().catch(e => console.warn('[projector] idle play:', e));
-    }
-
-    // Clean up guest video shortly after fade-out completes
-    setTimeout(() => {
-      guestVideo.pause();
-      guestVideo.removeAttribute('src');
-      guestVideo.load();
-      nameOverlay.style.display = 'none';
-    }, 200);
+    swapToken++;
+    crossfadeToIdle();
   }
 
-  function showGuest(guest) {
-    // Reset progress + timers
-    progressFill.style.width = '0';
+  async function showGuest(guest) {
     if (progressTimer) { clearInterval(progressTimer); progressTimer = null; }
     if (idleTimer)     { clearTimeout(idleTimer);     idleTimer     = null; }
 
-    // Text overlay (only visible if ?ui=1)
+    const token = ++swapToken;
+    displayMode = 'guest';
+    keepIdleCoverPlaying();
+    // Reset layer classes for prep (guest under idle)
+    active.classList.remove('is-front', 'is-fading');
+    idleEl.classList.remove('is-under', 'is-fading');
+    guestVideo.muted = true;
+    guestVideo.volume = 0;
+
     const [firstName, ...rest] = (guest.name || '').split(' ');
     const lastName = rest.join(' ');
     guestName.innerHTML = lastName
@@ -395,74 +813,63 @@
     nameOverlay.style.display = 'block';
 
     const hasVideo = !!guest.video;
-    const FALLBACK_DURATION = 6000;
 
-    function reveal() {
-      // Start guest video timer + crossfade
-      active.classList.add('show');
-
-      // Pause idle video to prevent audio overlap
-      if (!idleVideo.paused) {
-        idleVideo.pause();
-      }
-
-      const startTs = Date.now();
-      progressTimer = setInterval(() => {
-        let pct;
-        if (hasVideo && guestVideo.duration && isFinite(guestVideo.duration)) {
-          pct = (guestVideo.currentTime / guestVideo.duration) * 100;
-        } else {
-          pct = ((Date.now() - startTs) / FALLBACK_DURATION) * 100;
-        }
-        progressFill.style.width = Math.min(100, Math.max(0, pct)) + '%';
-      }, 80);
+    if (!hasVideo) {
+      if (token !== swapToken) return;
+      showFallback('Procesando');
+      await crossfadeToGuest(false, null);
+      idleTimer = setTimeout(showIdle, FALLBACK_DURATION);
+      return;
     }
 
-    if (hasVideo) {
-      const src = VIDEO_BASE + guest.video;
-      guestVideo.muted = !unmuted;
+    const src = VIDEO_BASE + guest.video;
 
-      guestVideo.onended = () => {
-        console.log('[projector] guest video ended');
+    guestVideo.onended = () => {
+      console.log('[projector] guest video ended');
+      showIdle();
+    };
+
+    guestVideo.ontimeupdate = () => {
+      if (displayMode !== 'guest' || token !== swapToken) return;
+      const d = guestVideo.duration;
+      if (!d || !isFinite(d)) return;
+      if (d - guestVideo.currentTime <= EARLY_IDLE_SEC) {
+        guestVideo.ontimeupdate = null;
+        guestVideo.onended = null;
+        console.log('[projector] early idle before black tail');
         showIdle();
-      };
+      }
+    };
 
-      // If the video file is missing or fails to load → fallback overlay
-      const onLoadError = () => {
-        console.warn('[projector] guest video failed to load → fallback');
-        showFallback('Procesando');
-        reveal();
-        idleTimer = setTimeout(showIdle, FALLBACK_DURATION);
-      };
-      guestVideo.onerror = onLoadError;
-
-      const onReady = () => {
-        guestVideo.removeEventListener('canplaythrough', onReady);
-        guestVideo.removeEventListener('canplay', onReady);
-        hideFallback();
-        guestVideo.currentTime = 0;
-        guestVideo.play().catch(e => console.warn('[projector] guest play:', e));
-        reveal();
-      };
-      guestVideo.addEventListener('canplaythrough', onReady, { once: true });
-      guestVideo.addEventListener('canplay', onReady, { once: true });
-      // If neither fires within 1.5 s, assume the file is missing → fallback
-      const safetyTimer = setTimeout(() => {
-        if (!active.classList.contains('show')) {
-          if (guestVideo.readyState >= 2) onReady();
-          else onLoadError();
-        }
-      }, 1500);
-
-      if (guestVideo.src !== src) guestVideo.src = src;
-      else { clearTimeout(safetyTimer); guestVideo.currentTime = 0; onReady(); }
-    } else {
-      // No video assigned → fallback overlay
+    try {
+      await prepareGuest(src);
+      if (token !== swapToken || displayMode !== 'guest') return;
+      const stats = await awaitOptimalSwapMoment(token);
+      if (token !== swapToken || displayMode !== 'guest') return;
+      hideFallback();
+      await crossfadeToGuest(true, stats);
+    } catch (err) {
+      console.warn('[projector] guest prepare failed → fallback', err);
+      if (token !== swapToken || displayMode !== 'guest') return;
       showFallback('Procesando');
-      reveal();
+      await crossfadeToGuest(false, null);
       idleTimer = setTimeout(showIdle, FALLBACK_DURATION);
     }
   }
+
+  // Report uncaught JS errors to the backend so the admin sees them
+  window.addEventListener('error', (ev) => {
+    try {
+      if (ws && ws.readyState === 1) {
+        ws.send(JSON.stringify({ type: 'PROJECTOR_ERROR', error: String(ev.message || ev.error || 'unknown') }));
+      }
+    } catch {}
+  });
+
+  // Start muted (browser autoplay policy)
+  idleVideo.muted  = true;
+  guestVideo.muted = true;
+  console.log('[projector] DOM ready, build=xfade-1, ui mode:', document.body.classList.contains('ui'));
 
   // ── WebSocket ─────────────────────────────────────────────────────────────
   function connect() {
@@ -476,7 +883,7 @@
       if (heartbeatInterval) clearInterval(heartbeatInterval);
       heartbeatInterval = setInterval(() => {
         if (ws && ws.readyState === 1) {
-          ws.send(JSON.stringify({ type: 'PING', state: active.classList.contains('show') ? 'guest' : 'idle' }));
+          ws.send(JSON.stringify({ type: 'PING', state: displayMode }));
         }
       }, 5_000);
       loadConfig();
@@ -535,11 +942,21 @@
   function unlockAudio() {
     if (!unmuted) {
       unmuted = true;
-      idleVideo.muted  = false;
+      console.log('[projector] audio unlocked, mode:', displayMode);
+    }
+    if (displayMode === 'guest' && guestLayerVisible()) {
+      silenceIdle();
       guestVideo.muted = false;
-      console.log('[projector] audio unlocked');
-      if (idleVideo.src && idleVideo.paused)   idleVideo.play().catch(() => {});
-      if (guestVideo.src && guestVideo.paused) guestVideo.play().catch(() => {});
+      if (guestVideo.src && guestVideo.paused) {
+        guestVideo.play().catch(() => {});
+      }
+    } else if (displayMode === 'guest') {
+      // Still buffering under idle cover — keep cover moving with sound
+      keepIdleCoverPlaying();
+      guestVideo.muted = true;
+    } else {
+      applyIdlePlayback();
+      guestVideo.muted = true;
     }
   }
   document.addEventListener('click', () => {

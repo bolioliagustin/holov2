@@ -50,7 +50,7 @@ start "HoloNFC projector" %CHROME% ^
   --kiosk ^
   --autoplay-policy=no-user-gesture-required ^
   --user-data-dir="%TEMP%\holonfc-projector" ^
-  --app=http://localhost:3000/projector.html
+  --app=http://localhost:3000/projector.html?v=xfade-1
 
 REM ── 5. Abrir el admin en kiosko (pantalla principal) ──────────────────
 timeout /t 1 /nobreak >nul

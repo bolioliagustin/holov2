@@ -12,6 +12,7 @@ const RELOAD_AFTER_MS    = 30_000;   // 30 s offline → send RELOAD to all proj
 let lastProjectorStatus = 'unknown'; // 'online' | 'offline' | 'unknown'
 let projectorOfflineSince = null;
 let reloadSentAt = null;
+let lastTransitionStats = null;
 
 export function initWS(server) {
   wss = new WebSocketServer({ server, path: '/ws' });
@@ -31,13 +32,25 @@ export function initWS(server) {
         meta.lastPing = Date.now();
         console.log(`[ws] hello from ${msg.role} @ ${ip}`);
         // Send current projector status to admins immediately
-        if (msg.role === 'admin') sendProjectorStatusTo(socket);
+        if (msg.role === 'admin') {
+          sendProjectorStatusTo(socket);
+          if (lastTransitionStats) {
+            socket.send(JSON.stringify({ type: 'TRANSITION_STATS', ...lastTransitionStats }));
+          }
+        }
         if (msg.role === 'projector') updateProjectorStatus();
         return;
       }
 
       if (msg.type === 'PING') {
         meta.lastPing = Date.now();
+        return;
+      }
+
+      if (msg.type === 'TRANSITION_STATS') {
+        lastTransitionStats = { ...msg };
+        delete lastTransitionStats.type;
+        broadcastToRole('admin', { type: 'TRANSITION_STATS', ...lastTransitionStats });
         return;
       }
 
@@ -114,6 +127,10 @@ function sendProjectorStatusTo(socket) {
 
 export function getProjectorStatus() {
   return { status: lastProjectorStatus, since: projectorOfflineSince };
+}
+
+export function getLastTransitionStats() {
+  return lastTransitionStats;
 }
 
 export function broadcast(data) {
